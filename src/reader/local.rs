@@ -2,16 +2,15 @@ use super::{Layer, LayerGeometry, TileReader, TileResponse};
 use async_trait::async_trait;
 use gdal::spatial_ref::SpatialRef;
 use gdal::{Dataset, DriverManager};
-use image::{ColorType, ImageEncoder, Luma, Rgba, RgbaImage, codecs::png::PngEncoder};
+use image::{ColorType, ImageEncoder, Rgba, RgbaImage, codecs::png::PngEncoder};
 use std::collections::HashMap;
-use std::fs;
 use std::io::Cursor;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use walkdir::WalkDir;
 
 pub struct LocalTileReader {
     root: PathBuf,
-    layers: HashMap<String, Vec<Layer>>, // layer -> styles
+    layers: HashMap<String, Vec<Layer>>,
 }
 impl LocalTileReader {
     pub fn new(root: PathBuf) -> Self {
@@ -48,21 +47,25 @@ impl LocalTileReader {
 
                             let auth_code = sref.auth_code().unwrap();
 
-                            println!(
-                                "📄 Layer '{}' | style: '{}' | CRS: {}:{}",
-                                file_name, style, auth_name, auth_code
-                            );
-
                             let layer = Layer {
                                 layer: file_name.to_string(),
                                 style: style.to_string(),
                                 path: entry.path().to_path_buf(),
+                                size_bytes: entry.metadata().map(|m| m.len()).unwrap(),
                                 geometry: LayerGeometry {
                                     crs_name: auth_name.to_string(),
                                     crs_code: auth_code,
                                 },
                             };
 
+                            println!(
+                                "📄 Layer '{}' | style: '{}' | CRS: {}:{} | size (MB): {:.2}",
+                                layer.layer,
+                                layer.style,
+                                auth_name,
+                                auth_code,
+                                layer.size_bytes as f64 / 1024.0 / 1024.0
+                            );
                             layers.entry(file_name.to_string()).or_default().push(layer);
                         }
                     }
@@ -184,7 +187,7 @@ impl TileReader for LocalTileReader {
         }
 
         let mut png_data = Vec::new();
-        let mut encoder = PngEncoder::new(Cursor::new(&mut png_data));
+        let encoder = PngEncoder::new(Cursor::new(&mut png_data));
         encoder
             .write_image(rgba_img.as_raw(), 256, 256, ColorType::Rgba8.into())
             .map_err(|e| e.to_string())?;

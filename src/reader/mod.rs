@@ -15,6 +15,7 @@ pub struct Layer {
     pub layer: String,
     pub style: String,
     pub path: PathBuf,
+    pub size_bytes: u64,
     pub geometry: LayerGeometry,
 }
 
