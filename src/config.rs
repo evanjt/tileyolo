@@ -12,6 +12,7 @@ pub struct Config {
     pub default_style: Option<String>,
     pub tile_size: u32,
     pub port: u16,
+    pub default_raster_band: usize,
 }
 
 impl Default for Config {
@@ -21,6 +22,7 @@ impl Default for Config {
             default_style: Some("default".to_string()),
             tile_size: 256,
             port: 8000,
+            default_raster_band: 1,
         }
     }
 }

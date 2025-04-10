@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 pub mod local;
 pub mod s3;
+pub mod style;
 
 pub struct TileResponse {
     pub bytes: Vec<u8>,
@@ -11,12 +12,23 @@ pub struct TileResponse {
 }
 
 #[derive(Debug, Clone)]
+pub struct ColorStop {
+    pub value: f32,
+    pub red: u8,
+    pub green: u8,
+    pub blue: u8,
+    pub alpha: u8,
+}
+
 pub struct Layer {
     pub layer: String,
     pub style: String,
     pub path: PathBuf,
     pub size_bytes: u64,
     pub geometry: LayerGeometry,
+    pub color_stops: Vec<ColorStop>,
+    pub min_value: f32,
+    pub max_value: f32,
 }
 
 #[derive(Debug, Clone)]

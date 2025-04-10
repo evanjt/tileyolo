@@ -1,4 +1,5 @@
-use super::{Layer, LayerGeometry, TileReader, TileResponse};
+use super::{ColorStop, Layer, LayerGeometry, TileReader, TileResponse};
+use crate::config::Config;
 use async_trait::async_trait;
 use gdal::spatial_ref::SpatialRef;
 use gdal::{Dataset, DriverManager};
@@ -46,6 +47,51 @@ impl LocalTileReader {
                             });
 
                             let auth_code = sref.auth_code().unwrap();
+                            let style_path = entry.path().parent().unwrap().join("style.txt");
+                            println!("🔍 Loading style for '{}': {:?}", file_name, style_path);
+
+                            let color_stops = match super::style::parse_style_file(&style_path) {
+                                Ok(stops) => {
+                                    println!(
+                                        "🎨 Parsed {} color stops for '{}'",
+                                        stops.len(),
+                                        file_name
+                                    );
+                                    stops
+                                }
+                                Err(err) => {
+                                    eprintln!(
+                                        "❌ Failed to parse style.txt for '{}': {}",
+                                        file_name, err
+                                    );
+                                    continue;
+                                }
+                            };
+                            let config = Config::default();
+                            let band = match ds.rasterband(config.default_raster_band) {
+                                Ok(band) => band,
+                                Err(err) => {
+                                    eprintln!(
+                                        "❌ Failed to get raster band for '{}': {}",
+                                        file_name, err
+                                    );
+                                    continue;
+                                }
+                            };
+                            let (min_value, max_value) = match band.compute_raster_min_max(false) {
+                                Ok(stats) => (stats.min as f32, stats.max as f32),
+                                Err(err) => {
+                                    eprintln!(
+                                        "❌ Failed to get min/max for '{}': {}",
+                                        file_name, err
+                                    );
+                                    eprintln!(
+                                        "❌ Failed to get min/max for '{}': {}",
+                                        file_name, err
+                                    );
+                                    continue;
+                                }
+                            };
 
                             let layer = Layer {
                                 layer: file_name.to_string(),
@@ -56,15 +102,20 @@ impl LocalTileReader {
                                     crs_name: auth_name.to_string(),
                                     crs_code: auth_code,
                                 },
+                                color_stops,
+                                min_value,
+                                max_value,
                             };
 
                             println!(
-                                "📄 Layer {:<50} | style: {:<10} | CRS: {:<5}:{:<5} | size (MB): {:>6.2}",
+                                "📄 Layer {:<50} | style: {:<10} | CRS: {:<5}:{:<5} | size (MB): {:>6.2} | min: {} | max: {}",
                                 layer.layer,
                                 layer.style,
                                 auth_name,
                                 auth_code,
-                                layer.size_bytes as f64 / 1024.0 / 1024.0
+                                layer.size_bytes as f64 / 1024.0 / 1024.0,
+                                layer.min_value,
+                                layer.max_value
                             );
                             layers.entry(file_name.to_string()).or_default().push(layer);
                         }
@@ -109,7 +160,7 @@ impl TileReader for LocalTileReader {
         y: u32,
         style: Option<&str>,
     ) -> Result<TileResponse, String> {
-        let tile_path = self
+        let layer_obj = self
             .layers
             .get(layer)
             .and_then(|styles| {
@@ -119,13 +170,13 @@ impl TileReader for LocalTileReader {
                         .unwrap_or(true)
                 })
             })
-            .map(|s| s.path.clone())
             .ok_or_else(|| {
                 format!(
                     "Tile not found for layer '{}' and style '{:?}'",
                     layer, style
                 )
             })?;
+        let tile_path = layer_obj.path.clone();
 
         let (minx, miny, maxx, maxy) = tile_bounds(z, x, y);
 
@@ -165,26 +216,58 @@ impl TileReader for LocalTileReader {
                 std::ptr::null_mut(),
             )
         };
-
-        let band = dst_ds.rasterband(1).map_err(|e| e.to_string())?;
+        let config = Config::default();
+        let band = dst_ds
+            .rasterband(config.default_raster_band)
+            .map_err(|e| e.to_string())?;
         let buffer = band
             .read_as::<u16>((0, 0), (256, 256), (256, 256), None)
             .map_err(|e| e.to_string())?
             .data()
             .to_vec();
 
-        let mut rgba_img = RgbaImage::new(256, 256);
-        for (i, val) in buffer.iter().enumerate() {
-            let px = if *val == 0 {
-                Rgba([0, 0, 0, 0])
-            } else {
-                let v = (*val >> 8) as u8;
-                Rgba([v, v, v, 255])
-            };
-            let x = (i % 256) as u32;
-            let y = (i / 256) as u32;
-            rgba_img.put_pixel(x, y, px);
+        fn interpolate_color(val: f32, stops: &[ColorStop]) -> Rgba<u8> {
+            for i in 0..stops.len().saturating_sub(1) {
+                let cs0 = &stops[i];
+                let cs1 = &stops[i + 1];
+                if val >= cs0.value && val <= cs1.value {
+                    let t = (val - cs0.value) / (cs1.value - cs0.value);
+                    let r = ((1.0 - t) * cs0.red as f32 + t * cs1.red as f32) as u8;
+                    let g = ((1.0 - t) * cs0.green as f32 + t * cs1.green as f32) as u8;
+                    let b = ((1.0 - t) * cs0.blue as f32 + t * cs1.blue as f32) as u8;
+                    let a = ((1.0 - t) * cs0.alpha as f32 + t * cs1.alpha as f32) as u8;
+                    return Rgba([r, g, b, a]);
+                }
+            }
+
+            Rgba([0, 0, 0, 0]) // fallback for out-of-range
         }
+
+        let rgba_img = {
+            let mut img = RgbaImage::new(256, 256);
+
+            for (i, val) in buffer.iter().enumerate() {
+                let raw_val = *val as f32;
+
+                if raw_val == 0.0 {
+                    img.put_pixel((i % 256) as u32, (i / 256) as u32, Rgba([0, 0, 0, 0]));
+                    continue;
+                }
+
+                let norm_val =
+                    (raw_val - layer_obj.min_value) / (layer_obj.max_value - layer_obj.min_value);
+                let style_range_min = layer_obj
+                    .color_stops
+                    .first()
+                    .map(|s| s.value)
+                    .unwrap_or(0.0);
+                let style_range_max = layer_obj.color_stops.last().map(|s| s.value).unwrap_or(1.0);
+                let scaled = style_range_min + norm_val * (style_range_max - style_range_min);
+                let px = interpolate_color(scaled, &layer_obj.color_stops);
+                img.put_pixel((i % 256) as u32, (i / 256) as u32, px);
+            }
+            img
+        };
 
         let mut png_data = Vec::new();
         let encoder = PngEncoder::new(Cursor::new(&mut png_data));
