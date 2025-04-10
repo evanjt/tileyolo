@@ -1,5 +1,6 @@
 pub mod config;
 pub mod reader;
+pub mod routes;
 pub mod server;
 
 pub use config::{Config, Source};

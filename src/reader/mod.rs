@@ -1,5 +1,4 @@
 use async_trait::async_trait;
-use axum::extract::Path;
 use std::collections::HashMap;
 use std::path::PathBuf;
 pub mod local;
