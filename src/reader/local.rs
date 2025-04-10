@@ -59,7 +59,7 @@ impl LocalTileReader {
                             };
 
                             println!(
-                                "📄 Layer '{}' | style: '{}' | CRS: {}:{} | size (MB): {:.2}",
+                                "📄 Layer {:<50} | style: {:<10} | CRS: {:<5}:{:<5} | size (MB): {:>6.2}",
                                 layer.layer,
                                 layer.style,
                                 auth_name,
