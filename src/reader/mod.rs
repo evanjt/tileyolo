@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::path::PathBuf;
+
 pub mod local;
 pub mod s3;
 
@@ -10,10 +11,17 @@ pub struct TileResponse {
 }
 
 #[derive(Debug, Clone)]
-pub struct LayerStyle {
+pub struct Layer {
     pub layer: String,
     pub style: String,
     pub path: PathBuf,
+    pub geometry: LayerGeometry,
+}
+
+#[derive(Debug, Clone)]
+pub struct LayerGeometry {
+    pub crs_name: String,
+    pub crs_code: i32,
 }
 
 #[async_trait]
@@ -21,10 +29,10 @@ pub trait TileReader: Send + Sync {
     async fn list_layers(&self) -> HashMap<String, Vec<String>>;
     async fn get_tile(
         &self,
-        layer: String,
+        layer: &str,
         z: u8,
         x: u32,
         y: u32,
-        style: Option<String>,
+        style: Option<&str>,
     ) -> Result<TileResponse, String>;
 }
