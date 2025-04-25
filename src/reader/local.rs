@@ -43,7 +43,6 @@ fn get_builtin_gradient(name: &str) -> Option<Box<dyn Gradient>> {
 }
 
 pub struct LocalTileReader {
-    root: PathBuf,
     layers: HashMap<String, Vec<Layer>>,
 }
 
@@ -148,9 +147,6 @@ impl LocalTileReader {
                     panic!("❌ Failed to get raster band for '{}': {}", file_stem, e)
                 });
 
-            // retrieve real no-data if present
-            let nodata_opt: Option<f32> = band.no_data_value().map(|v| v as f32);
-
             let (min_value, max_value) = band
                 .compute_raster_min_max(false)
                 .map(|stats| (stats.min as f32, stats.max as f32))
@@ -222,10 +218,16 @@ impl LocalTileReader {
                 }
                 s
             } else {
-                stops
-                    .iter()
-                    .map(|cs| format!("\x1b[38;2;{};{};{}m█\x1b[0m", cs.red, cs.green, cs.blue))
-                    .collect::<String>()
+                {
+                    let mut s = String::new();
+                    for cs in stops {
+                        s.push_str(&format!(
+                            "\x1b[38;2;{};{};{}m█\x1b[0m",
+                            cs.red, cs.green, cs.blue
+                        ));
+                    }
+                    s
+                }
             };
 
             table.add_row(vec![
@@ -254,7 +256,7 @@ impl LocalTileReader {
                 );
             }
         }
-        Self { root, layers }
+        Self { layers }
     }
 }
 #[async_trait]
@@ -278,7 +280,7 @@ impl TileReader for LocalTileReader {
         let layer_obj = self
             .layers
             .get(layer)
-            .and_then(|styles| styles.get(0))
+            .and_then(|styles| styles.first())
             .ok_or_else(|| format!("Layer not found: '{}'", layer))?;
         let tile_path = &layer_obj.path;
 
