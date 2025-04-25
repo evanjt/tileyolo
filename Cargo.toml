@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-anyhow = "1.0.97"
+anyhow = "1.0.98"
 async-trait = "0.1.88"
 axum = { version = "0.8.3", features = ["macros"] }
 gdal = "0.18.0"
@@ -12,3 +12,5 @@ gdal-sys = "0.11.0"
 image = "0.25.6"
 tokio = { version = "1.44.2", features = ["full"] }
 walkdir = "2.5.0"
+indicatif = "0.17"
+comfy-table = "7.1.4"

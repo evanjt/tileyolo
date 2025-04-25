@@ -1,9 +1,11 @@
 use super::{ColorStop, Layer, LayerGeometry, TileReader, TileResponse};
 use crate::config::Config;
 use async_trait::async_trait;
+use comfy_table::{Cell, Table};
 use gdal::spatial_ref::SpatialRef;
 use gdal::{Dataset, DriverManager};
 use image::{ColorType, ImageEncoder, Rgba, RgbaImage, codecs::png::PngEncoder};
+use indicatif::{ProgressBar, ProgressStyle};
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::path::PathBuf;
@@ -13,116 +15,140 @@ pub struct LocalTileReader {
     root: PathBuf,
     layers: HashMap<String, Vec<Layer>>,
 }
+
 impl LocalTileReader {
     pub fn new(root: PathBuf) -> Self {
+        // 1) Gather all .tif/.tiff files under root
+        let entries: Vec<_> = WalkDir::new(&root)
+            .min_depth(2)
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter(|e| {
+                e.path()
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .map(|ext| ext.eq_ignore_ascii_case("tif") || ext.eq_ignore_ascii_case("tiff"))
+                    .unwrap_or(false)
+            })
+            .collect();
+
+        let total_files = entries.len() as u64;
+        let total_bytes: u64 = entries
+            .iter()
+            .filter_map(|e| e.metadata().ok())
+            .map(|m| m.len())
+            .sum();
+
+        // 2) Set up the progress bar
+        let pb = ProgressBar::new(total_files);
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template("{msg}\n[{bar:40.cyan/blue}] {pos}/{len} {percent}%")
+                .unwrap()
+                .progress_chars("█▇▆▅▄▃▂▁  "),
+        );
+
+        let mut loaded_bytes = 0u64;
         let mut layers: HashMap<String, Vec<Layer>> = HashMap::new();
 
-        for entry in WalkDir::new(&root).min_depth(2).into_iter().flatten() {
-            if let Some(ext) = entry.path().extension() {
-                if ext == "tif" || ext == "tiff" {
-                    if let Some(file_name) = entry.path().file_stem().and_then(|s| s.to_str()) {
-                        if let Some(style) = entry
-                            .path()
-                            .parent()
-                            .and_then(|p| p.file_name())
-                            .and_then(|s| s.to_str())
-                        {
-                            let ds = match Dataset::open(entry.path()) {
-                                Ok(ds) => ds,
-                                Err(err) => {
-                                    eprintln!("❌ Failed to open {:?}: {}", entry.path(), err);
-                                    continue;
-                                }
-                            };
+        // 3) Process each file
+        for entry in entries {
+            let path = entry.path().to_path_buf();
+            let file_stem = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("<unknown>")
+                .to_string();
 
-                            let sref = match ds.spatial_ref() {
-                                Ok(sref) => sref,
-                                Err(err) => {
-                                    panic!("❌ CRS missing for '{}': {}", file_name, err);
-                                }
-                            };
+            // track bytes read
+            let file_bytes = entry.metadata().map(|m| m.len()).unwrap_or(0);
+            loaded_bytes += file_bytes;
+            let message = format!(
+                "Reading {:<30}  ({:.2}/{:.2} MiB)",
+                file_stem,
+                loaded_bytes as f64 / 1024.0 / 1024.0,
+                total_bytes as f64 / 1024.0 / 1024.0
+            );
+            pb.set_message(message);
 
-                            let auth_name = sref.auth_name().unwrap_or_else(|| {
-                                panic!("❌ Missing CRS authority for '{}'", file_name)
-                            });
-
-                            let auth_code = sref.auth_code().unwrap();
-                            let style_path = entry.path().parent().unwrap().join("style.txt");
-                            println!("🔍 Loading style for '{}': {:?}", file_name, style_path);
-
-                            let color_stops = match super::style::parse_style_file(&style_path) {
-                                Ok(stops) => {
-                                    println!(
-                                        "🎨 Parsed {} color stops for '{}'",
-                                        stops.len(),
-                                        file_name
-                                    );
-                                    stops
-                                }
-                                Err(err) => {
-                                    eprintln!(
-                                        "❌ Failed to parse style.txt for '{}': {}",
-                                        file_name, err
-                                    );
-                                    continue;
-                                }
-                            };
-                            let config = Config::default();
-                            let band = match ds.rasterband(config.default_raster_band) {
-                                Ok(band) => band,
-                                Err(err) => {
-                                    eprintln!(
-                                        "❌ Failed to get raster band for '{}': {}",
-                                        file_name, err
-                                    );
-                                    continue;
-                                }
-                            };
-                            let (min_value, max_value) = match band.compute_raster_min_max(false) {
-                                Ok(stats) => (stats.min as f32, stats.max as f32),
-                                Err(err) => {
-                                    eprintln!(
-                                        "❌ Failed to get min/max for '{}': {}",
-                                        file_name, err
-                                    );
-                                    eprintln!(
-                                        "❌ Failed to get min/max for '{}': {}",
-                                        file_name, err
-                                    );
-                                    continue;
-                                }
-                            };
-
-                            let layer = Layer {
-                                layer: file_name.to_string(),
-                                style: style.to_string(),
-                                path: entry.path().to_path_buf(),
-                                size_bytes: entry.metadata().map(|m| m.len()).unwrap(),
-                                geometry: LayerGeometry {
-                                    crs_name: auth_name.to_string(),
-                                    crs_code: auth_code,
-                                },
-                                color_stops,
-                                min_value,
-                                max_value,
-                            };
-
-                            println!(
-                                "📄 Layer {:<50} | style: {:<10} | CRS: {:<5}:{:<5} | size (MB): {:>6.2} | min: {} | max: {}",
-                                layer.layer,
-                                layer.style,
-                                auth_name,
-                                auth_code,
-                                layer.size_bytes as f64 / 1024.0 / 1024.0,
-                                layer.min_value,
-                                layer.max_value
-                            );
-                            layers.entry(file_name.to_string()).or_default().push(layer);
-                        }
-                    }
+            // --- your existing per-file logic starts here ---
+            let ds = match Dataset::open(&path) {
+                Ok(ds) => ds,
+                Err(err) => {
+                    eprintln!("❌ Failed to open {:?}: {}", path, err);
+                    pb.inc(1);
+                    continue;
                 }
+            };
+
+            let sref = ds
+                .spatial_ref()
+                .unwrap_or_else(|e| panic!("❌ CRS missing for '{}': {}", file_stem, e));
+            let auth_name = sref.auth_name().unwrap_or("UNKNOWN".to_string());
+            let auth_code = sref.auth_code().unwrap_or(0);
+
+            let style_dir = path.parent().unwrap().join("style.txt");
+            let color_stops = match super::style::parse_style_file(&style_dir) {
+                Ok(stops) => stops,
+                Err(err) => {
+                    eprintln!("❌ Failed to parse {:?}: {}", style_dir, err);
+                    pb.inc(1);
+                    continue;
+                }
+            };
+
+            let band = ds
+                .rasterband(Config::default().default_raster_band)
+                .unwrap_or_else(|e| {
+                    panic!("❌ Failed to get raster band for '{}': {}", file_stem, e)
+                });
+            let (min_value, max_value) = band
+                .compute_raster_min_max(false)
+                .map(|stats| (stats.min as f32, stats.max as f32))
+                .unwrap_or_else(|e| panic!("❌ Failed to get min/max for '{}': {}", file_stem, e));
+
+            let layer = Layer {
+                layer: file_stem.clone(),
+                style: path
+                    .parent()
+                    .and_then(|p| p.file_name())
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("default")
+                    .to_string(),
+                path: path.clone(),
+                size_bytes: file_bytes,
+                geometry: LayerGeometry {
+                    crs_name: auth_name.to_string(),
+                    crs_code: auth_code,
+                },
+                color_stops,
+                min_value,
+                max_value,
+            };
+
+            layers.entry(layer.layer.clone()).or_default().push(layer);
+            // --- end of existing logic ---
+
+            pb.inc(1);
+        }
+
+        pb.finish_with_message("✅ All files loaded!");
+
+        // 4) Print out a summary table by style
+        let mut style_counts: HashMap<String, usize> = HashMap::new();
+        for layer_list in layers.values() {
+            for layer in layer_list {
+                *style_counts.entry(layer.style.clone()).or_insert(0) += 1;
             }
         }
+
+        let mut table = Table::new();
+        table.set_header(vec!["Style", "Layer Count"]);
+        for (style, count) in style_counts {
+            table.add_row(vec![Cell::new(style), Cell::new(count)]);
+        }
+
+        println!("\nStyle summary:\n{}", table);
 
         Self { root, layers }
     }
