@@ -2,6 +2,20 @@
 name = "tileyolo"
 version = "0.1.0"
 edition = "2024"
+description = "A simple raster-based XYZ tile server for serving GeoTIFFs"
+license = "MIT"
+repository = "https://github.com/evanjt/tileyolo"
+readme = "README.md"
+keywords = ["raster", "tiles", "gdal", "geotiff", "server"]
+categories = ["science::geo", "web-programming::http-server"]
+
+[lib]
+name = "tileyolo"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tileyolo"
+path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0.98"

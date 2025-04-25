@@ -17,9 +17,6 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // this calls Config::default_data_folder() once under the hood,
-    // uses it for the help text, and again as the default if the user
-    // doesn’t specify --data-folder
     let cli = Cli::parse();
 
     // start from your actual Config::default()
