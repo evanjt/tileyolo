@@ -1,5 +1,5 @@
 use super::style::{get_builtin_gradient, is_builtin_palette, print_style_summary};
-use super::{ColorStop, Layer, LayerGeometry, TileReader, TileResponse};
+use super::{ColourStop, Layer, LayerGeometry, TileReader, TileResponse};
 use crate::config::Config;
 use async_trait::async_trait;
 use colorgrad::Gradient;
@@ -78,8 +78,8 @@ impl LocalTileReader {
                 .and_then(|s| s.to_str())
                 .unwrap_or("default");
 
-            // Load color stops or mark as builtin palette
-            let color_stops = if is_builtin_palette(style_name) {
+            // Load colour stops or mark as builtin palette
+            let colour_stops = if is_builtin_palette(style_name) {
                 Vec::new()
             } else {
                 let style_path = entry.path().parent().unwrap().join("style.txt");
@@ -131,7 +131,7 @@ impl LocalTileReader {
                     crs_name: auth_name.to_string(),
                     crs_code: auth_code,
                 },
-                color_stops,
+                colour_stops,
                 min_value,
                 max_value,
             };
@@ -145,17 +145,17 @@ impl LocalTileReader {
         pb.finish_with_message("✅ All files loaded!");
 
         // === build style_info ===
-        let mut style_info: HashMap<String, (usize, Vec<ColorStop>, f32, f32)> = HashMap::new();
+        let mut style_info: HashMap<String, (usize, Vec<ColourStop>, f32, f32)> = HashMap::new();
         for layer_list in layers.values() {
             for layer in layer_list {
                 let entry = style_info.entry(layer.style.clone()).or_insert((
                     0,
-                    layer.color_stops.clone(),
+                    layer.colour_stops.clone(),
                     layer.min_value,
                     layer.max_value,
                 ));
                 entry.0 += 1;
-                entry.1 = layer.color_stops.clone();
+                entry.1 = layer.colour_stops.clone();
                 entry.2 = entry.2.min(layer.min_value);
                 entry.3 = entry.3.max(layer.max_value);
             }
@@ -260,7 +260,7 @@ impl TileReader for LocalTileReader {
                 };
                 img.put_pixel((i % 256) as u32, (i / 256) as u32, px);
             }
-        } else if layer_obj.color_stops.is_empty() {
+        } else if layer_obj.colour_stops.is_empty() {
             // grayscale fallback
             for (i, &raw) in buffer.iter().enumerate() {
                 let px = if is_nodata(raw) {
@@ -275,7 +275,7 @@ impl TileReader for LocalTileReader {
             }
         } else {
             // custom stops
-            let cs = &layer_obj.color_stops;
+            let cs = &layer_obj.colour_stops;
             let style_min = cs.first().unwrap().value;
             let style_max = cs.last().unwrap().value;
             for (i, &raw) in buffer.iter().enumerate() {
@@ -286,7 +286,7 @@ impl TileReader for LocalTileReader {
                         (raw - layer_obj.min_value) / (layer_obj.max_value - layer_obj.min_value);
                     let scaled = style_min + norm.clamp(0.0, 1.0) * (style_max - style_min);
                     // find which segment we're in
-                    let mut color = Rgba([0, 0, 0, 0]);
+                    let mut colour = Rgba([0, 0, 0, 0]);
                     for w in cs.windows(2) {
                         let a = &w[0];
                         let b = &w[1];
@@ -296,11 +296,11 @@ impl TileReader for LocalTileReader {
                             let g = ((1.0 - t) * a.green as f32 + t * b.green as f32) as u8;
                             let b_ = ((1.0 - t) * a.blue as f32 + t * b.blue as f32) as u8;
                             let a_ = ((1.0 - t) * a.alpha as f32 + t * b.alpha as f32) as u8;
-                            color = Rgba([r, g, b_, a_]);
+                            colour = Rgba([r, g, b_, a_]);
                             break;
                         }
                     }
-                    color
+                    colour
                 };
                 img.put_pixel((i % 256) as u32, (i / 256) as u32, px);
             }
@@ -319,6 +319,10 @@ impl TileReader for LocalTileReader {
 }
 
 fn tile_bounds(z: u8, x: u32, y: u32) -> (f64, f64, f64, f64) {
+    // Function for converting Web Mercator "Slippy map" tile coordinates
+    // to bounding box
+    // https://wiki.openstreetmap.org/wiki/Slippy_map_tilenames
+
     let tile_size = 256.0;
     let initial_resolution = 2.0 * 20037508.342789244 / tile_size;
     let res = initial_resolution / (2f64.powi(z as i32));

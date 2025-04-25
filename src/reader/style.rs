@@ -1,11 +1,11 @@
-use super::ColorStop;
+use super::ColourStop;
 use colorgrad::{Gradient, preset};
 use comfy_table::{Cell, Table};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
-pub fn parse_style_file<P: AsRef<Path>>(path: P) -> Result<Vec<ColorStop>, String> {
+pub fn parse_style_file<P: AsRef<Path>>(path: P) -> Result<Vec<ColourStop>, String> {
     let content =
         fs::read_to_string(path).map_err(|e| format!("Failed to read style.txt: {}", e))?;
     let mut stops = Vec::new();
@@ -35,7 +35,7 @@ pub fn parse_style_file<P: AsRef<Path>>(path: P) -> Result<Vec<ColorStop>, Strin
             .parse()
             .map_err(|e| format!("Invalid alpha: {}", e))?;
 
-        stops.push(ColorStop {
+        stops.push(ColourStop {
             value,
             red,
             green,
@@ -77,7 +77,7 @@ pub fn get_builtin_gradient(name: &str) -> Option<Box<dyn Gradient>> {
     })
 }
 
-pub fn print_style_summary(style_info: &HashMap<String, (usize, Vec<ColorStop>, f32, f32)>) {
+pub fn print_style_summary(style_info: &HashMap<String, (usize, Vec<ColourStop>, f32, f32)>) {
     let mut table = Table::new();
     table
         .set_header(vec![
@@ -87,7 +87,7 @@ pub fn print_style_summary(style_info: &HashMap<String, (usize, Vec<ColorStop>, 
             Cell::new("Breaks").add_attribute(comfy_table::Attribute::Bold),
             Cell::new("Min").add_attribute(comfy_table::Attribute::Bold),
             Cell::new("Max").add_attribute(comfy_table::Attribute::Bold),
-            Cell::new("Colorbar").add_attribute(comfy_table::Attribute::Bold),
+            Cell::new("Colourbar").add_attribute(comfy_table::Attribute::Bold),
         ])
         .load_preset(comfy_table::presets::NOTHING);
 

@@ -12,7 +12,7 @@ pub struct TileResponse {
 }
 
 #[derive(Debug, Clone)]
-pub struct ColorStop {
+pub struct ColourStop {
     pub value: f32,
     pub red: u8,
     pub green: u8,
@@ -26,7 +26,7 @@ pub struct Layer {
     pub path: PathBuf,
     pub size_bytes: u64,
     pub geometry: LayerGeometry,
-    pub color_stops: Vec<ColorStop>,
+    pub colour_stops: Vec<ColourStop>,
     pub min_value: f32,
     pub max_value: f32,
 }
