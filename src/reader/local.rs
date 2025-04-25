@@ -257,7 +257,6 @@ impl LocalTileReader {
         Self { root, layers }
     }
 }
-
 #[async_trait]
 impl TileReader for LocalTileReader {
     async fn list_layers(&self) -> HashMap<String, Vec<String>> {
@@ -268,7 +267,6 @@ impl TileReader for LocalTileReader {
         }
         result
     }
-
     async fn get_tile(
         &self,
         layer: &str,
@@ -282,15 +280,15 @@ impl TileReader for LocalTileReader {
             .get(layer)
             .and_then(|styles| styles.get(0))
             .ok_or_else(|| format!("Layer not found: '{}'", layer))?;
-        let tile_path = layer_obj.path.clone();
+        let tile_path = &layer_obj.path;
 
-        // read and reproject as before
+        // reproject into MEM as f32 so we preserve negative values
         let (minx, miny, maxx, maxy) = tile_bounds(z, x, y);
-        let src_ds = Dataset::open(&tile_path).map_err(|e| e.to_string())?;
+        let src_ds = Dataset::open(tile_path).map_err(|e| e.to_string())?;
         let dst_srs = SpatialRef::from_epsg(3857).map_err(|e| e.to_string())?;
         let mem_driver = DriverManager::get_driver_by_name("MEM").map_err(|e| e.to_string())?;
         let mut dst_ds = mem_driver
-            .create_with_band_type::<u16, _>("", 256, 256, 1)
+            .create_with_band_type::<f32, _>("", 256, 256, 1)
             .map_err(|e| e.to_string())?;
         dst_ds
             .set_projection(&dst_srs.to_wkt().map_err(|e| e.to_string())?)
@@ -305,6 +303,7 @@ impl TileReader for LocalTileReader {
                 (miny - maxy) / 256.0,
             ])
             .map_err(|e| e.to_string())?;
+
         unsafe {
             gdal_sys::GDALReprojectImage(
                 src_ds.c_dataset(),
@@ -319,31 +318,34 @@ impl TileReader for LocalTileReader {
                 std::ptr::null_mut(),
             )
         };
+
+        // pull out the band (f32) and its no-data value, if any
         let band = dst_ds
             .rasterband(Config::default().default_raster_band)
             .map_err(|e| e.to_string())?;
         let nodata_opt: Option<f32> = band.no_data_value().map(|v| v as f32);
+
+        // read as f32 so negatives and zeros are preserved
         let buffer = band
-            .read_as::<u16>((0, 0), (256, 256), (256, 256), None)
+            .read_as::<f32>((0, 0), (256, 256), (256, 256), None)
             .map_err(|e| e.to_string())?
             .data()
             .to_vec();
 
-        // Prepare image
         let mut img = RgbaImage::new(256, 256);
 
-        // Decide styling mode:
+        // helper to detect true no-data/null
+        let is_nodata = |raw: f32| raw.is_nan() || nodata_opt.map(|nd| raw == nd).unwrap_or(false);
+
         if let Some(grad) = get_builtin_gradient(&layer_obj.style) {
-            // built-in palette mode
-            for (i, val) in buffer.iter().enumerate() {
-                let raw = *val as f32;
-                let is_nodata = nodata_opt.map(|nd| raw == nd).unwrap_or(false);
-                let px = if is_nodata {
+            // built-in palette
+            for (i, &raw) in buffer.iter().enumerate() {
+                let px = if is_nodata(raw) {
                     Rgba([0, 0, 0, 0])
                 } else {
-                    let norm =
-                        (raw - layer_obj.min_value) / (layer_obj.max_value - layer_obj.min_value);
-                    let t = norm.clamp(0.0, 1.0);
+                    let t = ((raw - layer_obj.min_value)
+                        / (layer_obj.max_value - layer_obj.min_value))
+                        .clamp(0.0, 1.0);
                     let [r, g, b, a] = grad.at(t).to_rgba8();
                     Rgba([r, g, b, a])
                 };
@@ -351,10 +353,8 @@ impl TileReader for LocalTileReader {
             }
         } else if layer_obj.color_stops.is_empty() {
             // grayscale fallback
-            for (i, val) in buffer.iter().enumerate() {
-                let raw = *val as f32;
-                let is_nodata = nodata_opt.map_or(false, |nd| raw == nd);
-                let px = if is_nodata {
+            for (i, &raw) in buffer.iter().enumerate() {
+                let px = if is_nodata(raw) {
                     Rgba([0, 0, 0, 0])
                 } else {
                     let norm =
@@ -365,40 +365,38 @@ impl TileReader for LocalTileReader {
                 img.put_pixel((i % 256) as u32, (i / 256) as u32, px);
             }
         } else {
-            // existing custom style stops logic
-            for (i, val) in buffer.iter().enumerate() {
-                let raw = *val as f32;
-                let is_nodata = nodata_opt.map_or(false, |nd| raw == nd);
-                let px = if is_nodata {
+            // custom stops
+            let cs = &layer_obj.color_stops;
+            let style_min = cs.first().unwrap().value;
+            let style_max = cs.last().unwrap().value;
+            for (i, &raw) in buffer.iter().enumerate() {
+                let px = if is_nodata(raw) {
                     Rgba([0, 0, 0, 0])
                 } else {
-                    // interpolation between stops
                     let norm =
                         (raw - layer_obj.min_value) / (layer_obj.max_value - layer_obj.min_value);
-                    let style_min = layer_obj.color_stops.first().unwrap().value;
-                    let style_max = layer_obj.color_stops.last().unwrap().value;
-                    let scaled = style_min + norm * (style_max - style_min);
-                    let mut c = Rgba([0, 0, 0, 0]);
-                    for j in 0..layer_obj.color_stops.len().saturating_sub(1) {
-                        let cs0 = &layer_obj.color_stops[j];
-                        let cs1 = &layer_obj.color_stops[j + 1];
-                        if scaled >= cs0.value && scaled <= cs1.value {
-                            let t = (scaled - cs0.value) / (cs1.value - cs0.value);
-                            let r = ((1.0 - t) * cs0.red as f32 + t * cs1.red as f32) as u8;
-                            let g = ((1.0 - t) * cs0.green as f32 + t * cs1.green as f32) as u8;
-                            let b = ((1.0 - t) * cs0.blue as f32 + t * cs1.blue as f32) as u8;
-                            let a = ((1.0 - t) * cs0.alpha as f32 + t * cs1.alpha as f32) as u8;
-                            c = Rgba([r, g, b, a]);
+                    let scaled = style_min + norm.clamp(0.0, 1.0) * (style_max - style_min);
+                    // find which segment we're in
+                    let mut color = Rgba([0, 0, 0, 0]);
+                    for w in cs.windows(2) {
+                        let a = &w[0];
+                        let b = &w[1];
+                        if (scaled >= a.value) && (scaled <= b.value) {
+                            let t = (scaled - a.value) / (b.value - a.value);
+                            let r = ((1.0 - t) * a.red as f32 + t * b.red as f32) as u8;
+                            let g = ((1.0 - t) * a.green as f32 + t * b.green as f32) as u8;
+                            let b_ = ((1.0 - t) * a.blue as f32 + t * b.blue as f32) as u8;
+                            let a_ = ((1.0 - t) * a.alpha as f32 + t * b.alpha as f32) as u8;
+                            color = Rgba([r, g, b_, a_]);
                             break;
                         }
                     }
-                    c
+                    color
                 };
                 img.put_pixel((i % 256) as u32, (i / 256) as u32, px);
             }
         }
 
-        // finalize PNG
         let mut png_data = Vec::new();
         PngEncoder::new(Cursor::new(&mut png_data))
             .write_image(img.as_raw(), 256, 256, ColorType::Rgba8.into())
