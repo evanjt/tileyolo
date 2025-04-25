@@ -27,7 +27,7 @@ cargo add tileyolo
    ```text
    http://localhost:8000/tiles/{layer}/{z}/{x}/{y}
    ```
-   - **`{layer}`** is the subfolder name or TIFF filename (without extension).
+   - **`{layer}`** is the TIFF filename (without extension).
 
 TileYolo will auto-detect styles (`style.txt` or built-in palettes), handle no-data values, and serve tiles on port 8000.
 
