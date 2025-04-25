@@ -1,6 +1,7 @@
 use super::{ColorStop, Layer, LayerGeometry, TileReader, TileResponse};
 use crate::config::Config;
 use async_trait::async_trait;
+use colorgrad::{Gradient, preset};
 use comfy_table::{Cell, Table};
 use gdal::spatial_ref::SpatialRef;
 use gdal::{Dataset, DriverManager};
@@ -10,6 +11,36 @@ use std::collections::HashMap;
 use std::io::Cursor;
 use std::path::PathBuf;
 use walkdir::WalkDir;
+
+fn is_builtin_palette(name: &str) -> bool {
+    matches!(
+        name,
+        "viridis"
+            | "magma"
+            | "plasma"
+            | "inferno"
+            | "turbo"
+            | "cubehelix_default"
+            | "rainbow"
+            | "spectral"
+            | "sinebow"
+    )
+}
+
+fn get_builtin_gradient(name: &str) -> Option<Box<dyn Gradient>> {
+    Some(match name {
+        "viridis" => Box::new(preset::viridis()),
+        "magma" => Box::new(preset::magma()),
+        "plasma" => Box::new(preset::plasma()),
+        "inferno" => Box::new(preset::inferno()),
+        "turbo" => Box::new(preset::turbo()),
+        "cubehelix_default" => Box::new(preset::cubehelix_default()),
+        "rainbow" => Box::new(preset::rainbow()),
+        "spectral" => Box::new(preset::spectral()),
+        "sinebow" => Box::new(preset::sinebow()),
+        _ => return None,
+    })
+}
 
 pub struct LocalTileReader {
     root: PathBuf,
@@ -71,7 +102,31 @@ impl LocalTileReader {
             );
             pb.set_message(message);
 
-            // --- your existing per-file logic starts here ---
+            // Determine style from folder name
+            let style_name = path
+                .parent()
+                .and_then(|p| p.file_name())
+                .and_then(|s| s.to_str())
+                .unwrap_or("default");
+
+            // Load color stops or mark as builtin palette
+            let color_stops = if is_builtin_palette(style_name) {
+                Vec::new()
+            } else {
+                let style_path = entry.path().parent().unwrap().join("style.txt");
+                match super::style::parse_style_file(&style_path) {
+                    Ok(stops) => stops,
+                    Err(err) => {
+                        eprintln!(
+                            "⚠️ Missing or invalid style.txt for '{}': {} -> falling back to grayscale",
+                            file_stem, err
+                        );
+                        Vec::new()
+                    }
+                }
+            };
+
+            // --- common per-file logic ---
             let ds = match Dataset::open(&path) {
                 Ok(ds) => ds,
                 Err(err) => {
@@ -87,21 +142,15 @@ impl LocalTileReader {
             let auth_name = sref.auth_name().unwrap_or("UNKNOWN".to_string());
             let auth_code = sref.auth_code().unwrap_or(0);
 
-            let style_dir = path.parent().unwrap().join("style.txt");
-            let color_stops = match super::style::parse_style_file(&style_dir) {
-                Ok(stops) => stops,
-                Err(err) => {
-                    eprintln!("❌ Failed to parse {:?}: {}", style_dir, err);
-                    pb.inc(1);
-                    continue;
-                }
-            };
-
             let band = ds
                 .rasterband(Config::default().default_raster_band)
                 .unwrap_or_else(|e| {
                     panic!("❌ Failed to get raster band for '{}': {}", file_stem, e)
                 });
+
+            // retrieve real no-data if present
+            let nodata_opt: Option<f32> = band.no_data_value().map(|v| v as f32);
+
             let (min_value, max_value) = band
                 .compute_raster_min_max(false)
                 .map(|stats| (stats.min as f32, stats.max as f32))
@@ -109,12 +158,7 @@ impl LocalTileReader {
 
             let layer = Layer {
                 layer: file_stem.clone(),
-                style: path
-                    .parent()
-                    .and_then(|p| p.file_name())
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("default")
-                    .to_string(),
+                style: style_name.to_string(),
                 path: path.clone(),
                 size_bytes: file_bytes,
                 geometry: LayerGeometry {
@@ -127,42 +171,91 @@ impl LocalTileReader {
             };
 
             layers.entry(layer.layer.clone()).or_default().push(layer);
-            // --- end of existing logic ---
+            // --- end per-file ---
 
             pb.inc(1);
         }
 
         pb.finish_with_message("✅ All files loaded!");
 
-        // 4) Print out a summary table by style
-        let mut style_counts: HashMap<String, usize> = HashMap::new();
+        // === build style_info ===
+        let mut style_info: HashMap<String, (usize, Vec<ColorStop>, f32, f32)> = HashMap::new();
         for layer_list in layers.values() {
             for layer in layer_list {
-                *style_counts.entry(layer.style.clone()).or_insert(0) += 1;
+                let entry = style_info.entry(layer.style.clone()).or_insert((
+                    0,
+                    layer.color_stops.clone(),
+                    layer.min_value,
+                    layer.max_value,
+                ));
+                entry.0 += 1;
+                entry.1 = layer.color_stops.clone();
+                entry.2 = entry.2.min(layer.min_value);
+                entry.3 = entry.3.max(layer.max_value);
             }
         }
 
+        // === print summary table ===
         let mut table = Table::new();
-        table.set_header(vec!["Style", "Layer Count"]);
-        for (style, count) in style_counts {
-            table.add_row(vec![Cell::new(style), Cell::new(count)]);
+        table.set_header(vec!["Style", "Count", "Breaks", "Min", "Max", "Colorbar"]);
+
+        for (style, (count, stops, min_v, max_v)) in &style_info {
+            // Breaks: "auto" for palettes, otherwise list your stops
+            let breaks_str = if is_builtin_palette(style) {
+                "auto".to_string()
+            } else {
+                stops
+                    .iter()
+                    .map(|s| format!("{:.2}", s.value))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+
+            // Colorbar: sample 10 steps of the gradient for palettes, otherwise one block per stop
+            let bar = if let Some(grad) = get_builtin_gradient(style) {
+                let mut s = String::new();
+                let n = 10;
+                for i in 0..n {
+                    let t = i as f32 / (n - 1) as f32;
+                    let [r, g, b, _] = grad.at(t).to_rgba8();
+                    s.push_str(&format!("\x1b[38;2;{};{};{}m█\x1b[0m", r, g, b));
+                }
+                s
+            } else {
+                stops
+                    .iter()
+                    .map(|cs| format!("\x1b[38;2;{};{};{}m█\x1b[0m", cs.red, cs.green, cs.blue))
+                    .collect::<String>()
+            };
+
+            table.add_row(vec![
+                Cell::new(style),
+                Cell::new(*count),
+                Cell::new(breaks_str),
+                Cell::new(min_v),
+                Cell::new(max_v),
+                Cell::new(bar),
+            ]);
         }
 
         println!("\nStyle summary:\n{}", table);
 
+        // === warnings for custom styles only ===
+        for (style, (_count, stops, min_v, max_v)) in &style_info {
+            if stops.is_empty() {
+                continue; // skip palettes
+            }
+            let style_min = stops.first().unwrap().value;
+            let style_max = stops.last().unwrap().value;
+            if *min_v < style_min || *max_v > style_max {
+                eprintln!(
+                    "⚠️ Style '{}' colour stops [{:.2}…{:.2}] do NOT cover data range [{:.2}…{:.2}]",
+                    style, style_min, style_max, min_v, max_v
+                );
+            }
+        }
         Self { root, layers }
     }
-}
-
-fn tile_bounds(z: u8, x: u32, y: u32) -> (f64, f64, f64, f64) {
-    let tile_size = 256.0;
-    let initial_resolution = 2.0 * 20037508.342789244 / tile_size;
-    let res = initial_resolution / (2f64.powi(z as i32));
-    let minx = x as f64 * tile_size * res - 20037508.342789244;
-    let maxx = (x as f64 + 1.0) * tile_size * res - 20037508.342789244;
-    let maxy = 20037508.342789244 - y as f64 * tile_size * res;
-    let miny = 20037508.342789244 - (y as f64 + 1.0) * tile_size * res;
-    (minx, miny, maxx, maxy)
 }
 
 #[async_trait]
@@ -170,10 +263,8 @@ impl TileReader for LocalTileReader {
     async fn list_layers(&self) -> HashMap<String, Vec<String>> {
         let mut result = HashMap::new();
         for (layer, styles) in &self.layers {
-            result.insert(
-                layer.clone(),
-                styles.iter().map(|s| s.style.clone()).collect(),
-            );
+            let style_names = styles.iter().map(|s| s.style.clone()).collect();
+            result.insert(layer.clone(), style_names);
         }
         result
     }
@@ -184,39 +275,26 @@ impl TileReader for LocalTileReader {
         z: u8,
         x: u32,
         y: u32,
-        style: Option<&str>,
+        _style: Option<&str>,
     ) -> Result<TileResponse, String> {
         let layer_obj = self
             .layers
             .get(layer)
-            .and_then(|styles| {
-                styles.iter().find(|s| {
-                    style
-                        .map(|style_name| s.style == style_name)
-                        .unwrap_or(true)
-                })
-            })
-            .ok_or_else(|| {
-                format!(
-                    "Tile not found for layer '{}' and style '{:?}'",
-                    layer, style
-                )
-            })?;
+            .and_then(|styles| styles.get(0))
+            .ok_or_else(|| format!("Layer not found: '{}'", layer))?;
         let tile_path = layer_obj.path.clone();
 
+        // read and reproject as before
         let (minx, miny, maxx, maxy) = tile_bounds(z, x, y);
-
         let src_ds = Dataset::open(&tile_path).map_err(|e| e.to_string())?;
         let dst_srs = SpatialRef::from_epsg(3857).map_err(|e| e.to_string())?;
         let mem_driver = DriverManager::get_driver_by_name("MEM").map_err(|e| e.to_string())?;
         let mut dst_ds = mem_driver
             .create_with_band_type::<u16, _>("", 256, 256, 1)
             .map_err(|e| e.to_string())?;
-
         dst_ds
             .set_projection(&dst_srs.to_wkt().map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;
-
         dst_ds
             .set_geo_transform(&[
                 minx,
@@ -227,7 +305,6 @@ impl TileReader for LocalTileReader {
                 (miny - maxy) / 256.0,
             ])
             .map_err(|e| e.to_string())?;
-
         unsafe {
             gdal_sys::GDALReprojectImage(
                 src_ds.c_dataset(),
@@ -242,68 +319,105 @@ impl TileReader for LocalTileReader {
                 std::ptr::null_mut(),
             )
         };
-        let config = Config::default();
         let band = dst_ds
-            .rasterband(config.default_raster_band)
+            .rasterband(Config::default().default_raster_band)
             .map_err(|e| e.to_string())?;
+        let nodata_opt: Option<f32> = band.no_data_value().map(|v| v as f32);
         let buffer = band
             .read_as::<u16>((0, 0), (256, 256), (256, 256), None)
             .map_err(|e| e.to_string())?
             .data()
             .to_vec();
 
-        fn interpolate_color(val: f32, stops: &[ColorStop]) -> Rgba<u8> {
-            for i in 0..stops.len().saturating_sub(1) {
-                let cs0 = &stops[i];
-                let cs1 = &stops[i + 1];
-                if val >= cs0.value && val <= cs1.value {
-                    let t = (val - cs0.value) / (cs1.value - cs0.value);
-                    let r = ((1.0 - t) * cs0.red as f32 + t * cs1.red as f32) as u8;
-                    let g = ((1.0 - t) * cs0.green as f32 + t * cs1.green as f32) as u8;
-                    let b = ((1.0 - t) * cs0.blue as f32 + t * cs1.blue as f32) as u8;
-                    let a = ((1.0 - t) * cs0.alpha as f32 + t * cs1.alpha as f32) as u8;
-                    return Rgba([r, g, b, a]);
-                }
-            }
+        // Prepare image
+        let mut img = RgbaImage::new(256, 256);
 
-            Rgba([0, 0, 0, 0]) // fallback for out-of-range
-        }
-
-        let rgba_img = {
-            let mut img = RgbaImage::new(256, 256);
-
+        // Decide styling mode:
+        if let Some(grad) = get_builtin_gradient(&layer_obj.style) {
+            // built-in palette mode
             for (i, val) in buffer.iter().enumerate() {
-                let raw_val = *val as f32;
-
-                if raw_val == 0.0 {
-                    img.put_pixel((i % 256) as u32, (i / 256) as u32, Rgba([0, 0, 0, 0]));
-                    continue;
-                }
-
-                let norm_val =
-                    (raw_val - layer_obj.min_value) / (layer_obj.max_value - layer_obj.min_value);
-                let style_range_min = layer_obj
-                    .color_stops
-                    .first()
-                    .map(|s| s.value)
-                    .unwrap_or(0.0);
-                let style_range_max = layer_obj.color_stops.last().map(|s| s.value).unwrap_or(1.0);
-                let scaled = style_range_min + norm_val * (style_range_max - style_range_min);
-                let px = interpolate_color(scaled, &layer_obj.color_stops);
+                let raw = *val as f32;
+                let is_nodata = nodata_opt.map(|nd| raw == nd).unwrap_or(false);
+                let px = if is_nodata {
+                    Rgba([0, 0, 0, 0])
+                } else {
+                    let norm =
+                        (raw - layer_obj.min_value) / (layer_obj.max_value - layer_obj.min_value);
+                    let t = norm.clamp(0.0, 1.0);
+                    let [r, g, b, a] = grad.at(t).to_rgba8();
+                    Rgba([r, g, b, a])
+                };
                 img.put_pixel((i % 256) as u32, (i / 256) as u32, px);
             }
-            img
-        };
+        } else if layer_obj.color_stops.is_empty() {
+            // grayscale fallback
+            for (i, val) in buffer.iter().enumerate() {
+                let raw = *val as f32;
+                let is_nodata = nodata_opt.map_or(false, |nd| raw == nd);
+                let px = if is_nodata {
+                    Rgba([0, 0, 0, 0])
+                } else {
+                    let norm =
+                        (raw - layer_obj.min_value) / (layer_obj.max_value - layer_obj.min_value);
+                    let lum = (norm.clamp(0.0, 1.0) * 255.0) as u8;
+                    Rgba([lum, lum, lum, 255])
+                };
+                img.put_pixel((i % 256) as u32, (i / 256) as u32, px);
+            }
+        } else {
+            // existing custom style stops logic
+            for (i, val) in buffer.iter().enumerate() {
+                let raw = *val as f32;
+                let is_nodata = nodata_opt.map_or(false, |nd| raw == nd);
+                let px = if is_nodata {
+                    Rgba([0, 0, 0, 0])
+                } else {
+                    // interpolation between stops
+                    let norm =
+                        (raw - layer_obj.min_value) / (layer_obj.max_value - layer_obj.min_value);
+                    let style_min = layer_obj.color_stops.first().unwrap().value;
+                    let style_max = layer_obj.color_stops.last().unwrap().value;
+                    let scaled = style_min + norm * (style_max - style_min);
+                    let mut c = Rgba([0, 0, 0, 0]);
+                    for j in 0..layer_obj.color_stops.len().saturating_sub(1) {
+                        let cs0 = &layer_obj.color_stops[j];
+                        let cs1 = &layer_obj.color_stops[j + 1];
+                        if scaled >= cs0.value && scaled <= cs1.value {
+                            let t = (scaled - cs0.value) / (cs1.value - cs0.value);
+                            let r = ((1.0 - t) * cs0.red as f32 + t * cs1.red as f32) as u8;
+                            let g = ((1.0 - t) * cs0.green as f32 + t * cs1.green as f32) as u8;
+                            let b = ((1.0 - t) * cs0.blue as f32 + t * cs1.blue as f32) as u8;
+                            let a = ((1.0 - t) * cs0.alpha as f32 + t * cs1.alpha as f32) as u8;
+                            c = Rgba([r, g, b, a]);
+                            break;
+                        }
+                    }
+                    c
+                };
+                img.put_pixel((i % 256) as u32, (i / 256) as u32, px);
+            }
+        }
 
+        // finalize PNG
         let mut png_data = Vec::new();
-        let encoder = PngEncoder::new(Cursor::new(&mut png_data));
-        encoder
-            .write_image(rgba_img.as_raw(), 256, 256, ColorType::Rgba8.into())
+        PngEncoder::new(Cursor::new(&mut png_data))
+            .write_image(img.as_raw(), 256, 256, ColorType::Rgba8.into())
             .map_err(|e| e.to_string())?;
 
         Ok(TileResponse {
-            content_type: "image/png".to_string(),
+            content_type: "image/png".into(),
             bytes: png_data,
         })
     }
+}
+
+fn tile_bounds(z: u8, x: u32, y: u32) -> (f64, f64, f64, f64) {
+    let tile_size = 256.0;
+    let initial_resolution = 2.0 * 20037508.342789244 / tile_size;
+    let res = initial_resolution / (2f64.powi(z as i32));
+    let minx = x as f64 * tile_size * res - 20037508.342789244;
+    let maxx = (x as f64 + 1.0) * tile_size * res - 20037508.342789244;
+    let maxy = 20037508.342789244 - y as f64 * tile_size * res;
+    let miny = 20037508.342789244 - (y as f64 + 1.0) * tile_size * res;
+    (minx, miny, maxx, maxy)
 }
