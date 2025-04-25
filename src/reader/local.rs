@@ -1,8 +1,8 @@
+use super::style::{get_builtin_gradient, is_builtin_palette, print_style_summary};
 use super::{ColorStop, Layer, LayerGeometry, TileReader, TileResponse};
 use crate::config::Config;
 use async_trait::async_trait;
-use colorgrad::{Gradient, preset};
-use comfy_table::{Cell, Table};
+use colorgrad::Gradient;
 use gdal::spatial_ref::SpatialRef;
 use gdal::{Dataset, DriverManager};
 use image::{ColorType, ImageEncoder, Rgba, RgbaImage, codecs::png::PngEncoder};
@@ -11,36 +11,6 @@ use std::collections::HashMap;
 use std::io::Cursor;
 use std::path::PathBuf;
 use walkdir::WalkDir;
-
-fn is_builtin_palette(name: &str) -> bool {
-    matches!(
-        name,
-        "viridis"
-            | "magma"
-            | "plasma"
-            | "inferno"
-            | "turbo"
-            | "cubehelix_default"
-            | "rainbow"
-            | "spectral"
-            | "sinebow"
-    )
-}
-
-fn get_builtin_gradient(name: &str) -> Option<Box<dyn Gradient>> {
-    Some(match name {
-        "viridis" => Box::new(preset::viridis()),
-        "magma" => Box::new(preset::magma()),
-        "plasma" => Box::new(preset::plasma()),
-        "inferno" => Box::new(preset::inferno()),
-        "turbo" => Box::new(preset::turbo()),
-        "cubehelix_default" => Box::new(preset::cubehelix_default()),
-        "rainbow" => Box::new(preset::rainbow()),
-        "spectral" => Box::new(preset::spectral()),
-        "sinebow" => Box::new(preset::sinebow()),
-        _ => return None,
-    })
-}
 
 pub struct LocalTileReader {
     layers: HashMap<String, Vec<Layer>>,
@@ -193,95 +163,6 @@ impl LocalTileReader {
         print_style_summary(&style_info);
 
         Self { layers }
-    }
-}
-fn print_style_summary(style_info: &HashMap<String, (usize, Vec<ColorStop>, f32, f32)>) {
-    // === print summary table ===
-    let mut table = Table::new();
-    table
-        .set_header(vec![
-            Cell::new("").add_attribute(comfy_table::Attribute::Bold),
-            Cell::new("Style").add_attribute(comfy_table::Attribute::Bold),
-            Cell::new("Layers").add_attribute(comfy_table::Attribute::Bold),
-            Cell::new("Breaks").add_attribute(comfy_table::Attribute::Bold),
-            Cell::new("Min").add_attribute(comfy_table::Attribute::Bold),
-            Cell::new("Max").add_attribute(comfy_table::Attribute::Bold),
-            Cell::new("Colorbar").add_attribute(comfy_table::Attribute::Bold),
-        ])
-        .load_preset(comfy_table::presets::NOTHING);
-
-    let mut warnings = Vec::new();
-
-    for (style, (count, stops, min_v, max_v)) in style_info {
-        // Breaks: "auto" for palettes, otherwise list your stops
-        let breaks_str = if is_builtin_palette(style) {
-            "auto".to_string()
-        } else {
-            stops
-                .iter()
-                .map(|s| format!("{:.2}", s.value))
-                .collect::<Vec<_>>()
-                .join(", ")
-        };
-
-        // Colorbar: sample 10 steps of the gradient for palettes, otherwise one block per stop
-        let bar = if let Some(grad) = get_builtin_gradient(style) {
-            let mut s = String::new();
-            let n = 10;
-            for i in 0..n {
-                let t = i as f32 / (n - 1) as f32;
-                let [r, g, b, _] = grad.at(t).to_rgba8();
-                s.push_str(&format!("\x1b[38;2;{};{};{}m█\x1b[0m", r, g, b));
-            }
-            s
-        } else {
-            {
-                let mut s = String::new();
-                for cs in stops {
-                    s.push_str(&format!(
-                        "\x1b[38;2;{};{};{}m█\x1b[0m",
-                        cs.red, cs.green, cs.blue
-                    ));
-                }
-                s
-            }
-        };
-
-        let mut style_row = vec![
-            Cell::new(""), // To capture warnings if any
-            Cell::new(style),
-            Cell::new(*count),
-            Cell::new(breaks_str),
-            Cell::new(min_v),
-            Cell::new(max_v),
-            Cell::new(bar),
-        ];
-
-        // Add warning emoji if applicable
-        if !stops.is_empty() {
-            let style_min = stops.first().unwrap().value;
-            let style_max = stops.last().unwrap().value;
-            if *min_v < style_min || *max_v > style_max {
-                warnings.push(format!(
-                    "  ⚠️{}: Colour stops [{:.2}…{:.2}] do NOT cover data range [{:.2}…{:.2}]",
-                    style, style_min, style_max, min_v, max_v
-                ));
-                style_row[0] = Cell::new("⚠️");
-            }
-        }
-
-        table.add_row(style_row);
-    }
-
-    println!("\nStyle summary:\n{}", table);
-
-    // Print warnings
-    if !warnings.is_empty() {
-        println!("\nWarnings:");
-        for warning in warnings {
-            println!("{}", warning);
-        }
-        println!();
     }
 }
 
