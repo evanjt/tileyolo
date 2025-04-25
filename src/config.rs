@@ -8,7 +8,8 @@ pub enum Source {
 
 #[derive(Debug, Clone)]
 pub struct Config {
-    pub source: Source,
+    pub source: Option<Source>,
+    pub data_folder: String,
     pub default_style: Option<String>,
     pub tile_size: u32,
     pub port: u16,
@@ -18,11 +19,37 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
-            source: Source::Local(PathBuf::from("data")),
+            source: None,
+            // Default may be S3 in the future...
+            data_folder: "data".to_string(),
             default_style: Some("default".to_string()),
             tile_size: 256,
             port: 8000,
             default_raster_band: 1,
         }
+    }
+}
+
+impl Config {
+    pub fn parse_path_to_absolute(path: &PathBuf) -> PathBuf {
+        // Convert the path to an absolute path
+        let path = PathBuf::from(path);
+        if path.is_absolute() {
+            path
+        } else {
+            std::env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join(path)
+        }
+    }
+
+    pub fn default_data_folder() -> String {
+        // Render the config data_folder as a string with the current path
+        // to form an absolute path
+        let default_data_dir = Self::default().data_folder.clone();
+        let path = PathBuf::from(default_data_dir);
+        Self::parse_path_to_absolute(&path)
+            .to_string_lossy()
+            .into_owned()
     }
 }
