@@ -34,7 +34,14 @@ impl TileServer {
 
         let addr = SocketAddr::from(([0, 0, 0, 0], self.config.port));
         let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-        println!("🚀 TileYolo serving on {}", addr);
+
+        // Choose a random layer from layers vector for example URL
+        let random_layer = layers.keys().next().unwrap();
+        println!(
+            "🚀 TileYolo serving on {}. Example: http://{}/tiles/{}/{}/{}/{}",
+            addr, addr, random_layer, 0, 0, 0
+        );
+
         axum::serve(listener, app).await.unwrap();
 
         Ok(())
