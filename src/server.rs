@@ -26,8 +26,7 @@ impl TileServer {
         let reader: Arc<dyn TileReader> = self.reader;
         // Get all the layers from reader and list quantity
         let layers = reader.list_layers().await;
-        println!("📦 Total layers: {}", layers.len());
-        // println!("Layers {:?}", layers);
+
         let app: Router = Router::new()
             .route("/tiles/{layer}/{z}/{x}/{y}", get(tile_handler))
             .with_state(reader);

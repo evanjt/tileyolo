@@ -142,8 +142,9 @@ impl LocalTileReader {
 
         // Summary of loaded files
         pb.finish_with_message("✅ All files loaded!");
+
         println!(
-            "📦 Total bytes: {:.2} MiB",
+            "\n📦 Total bytes: {:.2} MiB",
             total_bytes as f64 / 1024.0 / 1024.0
         );
         println!("📦 Total layers: {}", layers.len());
