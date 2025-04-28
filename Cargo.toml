@@ -27,7 +27,8 @@ image = "0.25.6"
 tokio = { version = "1.44.2", features = ["full"] }
 walkdir = "2.5.0"
 indicatif = "0.17"
-comfy-table = { version = ">=7.1.1", features = [ "tty"] }
+comfy-table = { version = "7.1.4", features = [ "tty", "custom_styling"] }
 colorgrad = "0.7.1"
 clap = { version = "4.5.37", features = ["derive"] }
 proj = "0.30.0"
+ansi-str = "0.9.0"
