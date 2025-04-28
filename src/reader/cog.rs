@@ -9,40 +9,40 @@ use proj::Proj;
 use std::path::Path;
 use tokio::task;
 
-#[tokio::main]
-async fn main() -> gdal::errors::Result<()> {
-    // Absolute paths
-    let manifest = env!("CARGO_MANIFEST_DIR");
-    let input_path = format!("{}/data/***REMOVED***.tif", manifest);
-    // let ds = Dataset::open("/vsis3/cogbucket/cog.tif")?; // S3 bucket
-    let output_path = format!("{}/data/switzerland_extract.tif", manifest);
+// #[tokio::main]
+// async fn main() -> gdal::errors::Result<()> {
+//     // Absolute paths
+//     let manifest = env!("CARGO_MANIFEST_DIR");
+//     let input_path = format!("{}/data/***REMOVED***.tif", manifest);
+//     // let ds = Dataset::open("/vsis3/cogbucket/cog.tif")?; // S3 bucket
+//     let output_path = format!("{}/data/switzerland_extract.tif", manifest);
 
-    if !Path::new(&input_path).exists() {
-        panic!("COG file not found at '{}'", input_path);
-    }
+//     if !Path::new(&input_path).exists() {
+//         panic!("COG file not found at '{}'", input_path);
+//     }
 
-    // Switzerland bbox
-    // let switz_min_lon = 7.3264_f64;
-    // let switz_max_lon = 7.3664_f64;
-    // let switz_min_lat = 46.218_f64;
-    // let switz_max_lat = 46.258_f64;
+//     // Switzerland bbox
+//     // let switz_min_lon = 7.3264_f64;
+//     // let switz_max_lon = 7.3664_f64;
+//     // let switz_min_lat = 46.218_f64;
+//     // let switz_max_lat = 46.258_f64;
 
-    let switz_min_lon = 5.9559_f64;
-    let switz_max_lon = 10.4921_f64;
-    let switz_min_lat = 45.8179_f64;
-    let switz_max_lat = 47.8084_f64;
+//     let switz_min_lon = 5.9559_f64;
+//     let switz_max_lon = 10.4921_f64;
+//     let switz_min_lat = 45.8179_f64;
+//     let switz_max_lat = 47.8084_f64;
 
-    // Call the async process_cog function
-    process_cog(
-        input_path.clone(),
-        output_path.clone(),
-        // output_srid,
-        (switz_min_lon, switz_max_lon, switz_min_lat, switz_max_lat),
-    )
-    .await?;
+//     // Call the async process_cog function
+//     process_cog(
+//         input_path.clone(),
+//         output_path.clone(),
+//         // output_srid,
+//         (switz_min_lon, switz_max_lon, switz_min_lat, switz_max_lat),
+//     )
+//     .await?;
 
-    Ok(())
-}
+//     Ok(())
+// }
 
 async fn process_cog(
     input_path: String,
