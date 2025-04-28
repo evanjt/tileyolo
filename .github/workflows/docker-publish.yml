@@ -1,10 +1,14 @@
-name: Build, Publish & Sign Docker Image
+name: Build & Publish Docker Image
 
 on:
   push:
-    # Trigger on tags like 0.1.0, 1.2.3, etc.
+    # only run on semver tags like 0.1.0
     tags:
       - '[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: read        # for checkout
+  packages: write       # for GHCR push
 
 jobs:
   build-and-publish:
@@ -13,7 +17,7 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v3
 
-      - name: Set up QEMU (for cross-platform builds)
+      - name: Set up QEMU
         uses: docker/setup-qemu-action@v2
 
       - name: Set up Docker Buildx
@@ -38,13 +42,3 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository_owner }}/${{ github.repository }}:${{ steps.version.outputs.VERSION }}
             ghcr.io/${{ github.repository_owner }}/${{ github.repository }}:latest
-
-      - name: Install Cosign
-        uses: sigstore/cosign-installer@v2
-
-      - name: Sign the image
-        env:
-          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
-        run: |
-          echo "${{ secrets.COSIGN_KEY }}" | base64 --decode > cosign.key
-          cosign sign --key cosign.key ghcr.io/${{ github.repository_owner }}/${{ github.repository }}:${{ steps.version.outputs.VERSION }}
