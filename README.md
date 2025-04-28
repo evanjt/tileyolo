@@ -18,6 +18,12 @@ cargo add tileyolo
 
 ## Usage
 
+#### Dependencies
+
+* GDAL
+
+### Cargo
+
 1. `cd` into your data directory (parent of style subfolders).
 2. Run:
    ```bash
@@ -30,6 +36,15 @@ cargo add tileyolo
    - **`{layer}`** is the TIFF filename (without extension).
 
 TileYolo will auto-detect styles (`style.txt` or built-in palettes), handle no-data values, and serve tiles on port 8000.
+
+### Docker
+
+To run with the docker image on port 8000 and mapping the local folder `./data`, 
+use the command:
+
+```
+docker run -v ./data:/app/data -p 8000:8000 tileyolo
+```
 
 ## Styles & Folder Structure
 

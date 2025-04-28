@@ -156,329 +156,174 @@ pub async fn process_cog(
     .map_err(|e| GdalError::BadArgument(e.to_string()))?
 }
 
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-//     use std::fs;
-//     use std::path::Path;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::reader::{ColourStop, Layer, LayerGeometry, cog::process_cog};
+    use gdal::spatial_ref::SpatialRef;
+    use gdal::{Dataset, DriverManager};
+    use image::{ColorType, ImageDecoder, codecs::png::PngDecoder};
+    use rand::rngs::StdRng;
+    use rand::{Rng, SeedableRng};
+    use std::{fs, io::Cursor, path::PathBuf};
+    use tempfile::TempDir;
 
-//     #[tokio::test]
-//     async fn test_process_cog_data_length() {
-//         let manifest = env!("CARGO_MANIFEST_DIR");
-//         let input_path = format!(
-//             "{}/data/default/***REMOVED***.tif",
-//             manifest
-//         );
-//         let output_path = format!("{}/data/test_output.tif", manifest);
+    fn make_layer(min_value: f32, max_value: f32) -> Layer {
+        let path = PathBuf::new(); // will be set per-test
+        let colour_stops = vec![
+            ColourStop {
+                value: 0.0,
+                red: 215,
+                green: 25,
+                blue: 28,
+                alpha: 255,
+            },
+            ColourStop {
+                value: 100.0,
+                red: 253,
+                green: 174,
+                blue: 97,
+                alpha: 255,
+            },
+            ColourStop {
+                value: 200.0,
+                red: 255,
+                green: 255,
+                blue: 191,
+                alpha: 255,
+            },
+            ColourStop {
+                value: 300.0,
+                red: 171,
+                green: 221,
+                blue: 164,
+                alpha: 255,
+            },
+            ColourStop {
+                value: 400.0,
+                red: 43,
+                green: 131,
+                blue: 186,
+                alpha: 255,
+            },
+        ];
+        Layer {
+            layer: "test".to_string(),
+            style: "default".to_string(),
+            path,
+            size_bytes: 0,
+            geometry: LayerGeometry {
+                crs_name: "EPSG".to_string(),
+                crs_code: 3857,
+            },
+            colour_stops,
+            min_value,
+            max_value,
+            is_cog: true,
+            last_modified: std::time::SystemTime::UNIX_EPOCH,
+        }
+    }
 
-//         if !Path::new(&input_path).exists() {
-//             panic!("Test COG file not found at '{}'", input_path);
-//         }
+    /// Generates a temporary GeoTIFF in EPSG:3857 with reproducible random data,
+    /// injecting ~10% NaN as no-data.
+    fn generate_random_cog(width: usize, height: usize) -> (TempDir, PathBuf) {
+        let tmp = TempDir::new().expect("failed to create temp dir");
+        let file_path = tmp.path().join("test.tif");
 
-//         // Switzerland bbox
-//         let min_lon = -10.0_f64;
-//         let max_lon = 40.0_f64;
-//         let min_lat = 35.0_f64;
-//         let max_lat = 72.0_f64;
+        let driver = DriverManager::get_driver_by_name("GTIFF").unwrap();
+        let mut ds = driver
+            .create_with_band_type::<f32, _>(file_path.to_str().unwrap(), width, height, 1)
+            .unwrap();
 
-//         // Create a dummy Layer object
-//         let layer = Layer {
-//             layer: "***REMOVED***".to_string(),
-//             style: "default".to_string(),
-//             path: Path::new(&input_path).to_path_buf(),
-//             size_bytes: fs::metadata(&input_path).unwrap().len(),
-//             geometry: LayerGeometry {
-//                 crs_name: "EPSG".to_string(),
-//                 crs_code: 4326,
-//             },
-//             colour_stops: vec![
-//                 ColourStop {
-//                     value: 0.0,
-//                     red: 215,
-//                     green: 25,
-//                     blue: 28,
-//                     alpha: 255,
-//                 },
-//                 ColourStop {
-//                     value: 100.0,
-//                     red: 253,
-//                     green: 174,
-//                     blue: 97,
-//                     alpha: 255,
-//                 },
-//                 ColourStop {
-//                     value: 200.0,
-//                     red: 255,
-//                     green: 255,
-//                     blue: 191,
-//                     alpha: 255,
-//                 },
-//                 ColourStop {
-//                     value: 300.0,
-//                     red: 171,
-//                     green: 221,
-//                     blue: 164,
-//                     alpha: 255,
-//                 },
-//                 ColourStop {
-//                     value: 400.0,
-//                     red: 43,
-//                     green: 131,
-//                     blue: 186,
-//                     alpha: 255,
-//                 },
-//             ],
-//             min_value: 1.0,
-//             max_value: 22613972.0,
-//         };
+        // Use Web Mercator so reprojection is identity
+        let sref = SpatialRef::from_epsg(3857).unwrap();
+        ds.set_projection(&sref.to_wkt().unwrap()).unwrap();
+        ds.set_geo_transform(&[0.0, 1.0, 0.0, 0.0, 0.0, -1.0])
+            .unwrap();
 
-//         // Process the COG file
-//         let buffer = process_cog(
-//             input_path.clone(),
-//             (min_lon, max_lon, min_lat, max_lat),
-//             layer,
-//         )
-//         .await
-//         .expect("Failed to process COG");
+        // Fill with reproducible data and inject NaNs
+        let mut rng = StdRng::seed_from_u64(42);
+        let data: Vec<f32> = (0..width * height)
+            .map(|_| {
+                if rng.random_bool(0.1) {
+                    f32::NAN
+                } else {
+                    rng.random_range(0.0..100.0)
+                }
+            })
+            .collect();
 
-//         // Verify the data length
-//         assert!(!buffer.is_empty(), "Data length should be greater than 0");
+        let mut band = ds
+            .rasterband(Config::default().default_raster_band)
+            .unwrap();
 
-//         // Check that the output is a valid PNG
-//         let png_decoder = image::codecs::png::PngDecoder::new(Cursor::new(&buffer))
-//             .expect("Failed to decode PNG");
+        let mut buffer = gdal::raster::Buffer::<f32>::new((width, height), data);
+        band.write((0, 0), (width, height), &mut buffer).unwrap();
+        ds.flush_cache().unwrap();
 
-//         // Save the PNG to a file for inspection
-//         let output_png_path = format!("{}/data/test_output.png", manifest);
-//         let mut output_file =
-//             fs::File::create(&output_png_path).expect("Failed to create output PNG file");
+        (tmp, file_path)
+    }
 
-//         std::io::Write::write_all(&mut output_file, &buffer).expect("Failed to write PNG");
+    #[tokio::test]
+    async fn test_process_cog_data_length() {
+        let (tmp, path) = generate_random_cog(256, 256);
+        let mut layer = make_layer(1.0, 100.0);
+        layer.path = path.clone();
+        layer.size_bytes = fs::metadata(&path).unwrap().len();
 
-//         assert_eq!(
-//             png_decoder.color_type(),
-//             ColorType::Rgba8,
-//             "Expected RGBA8 PNG"
-//         );
-//     }
+        let buffer = process_cog(path.clone(), (0.0, 256.0, 0.0, 256.0), layer)
+            .await
+            .expect("process_cog should succeed");
 
-//     // #[tokio::test]
-//     async fn test_nodata_values_are_transparent() {
-//         let manifest = env!("CARGO_MANIFEST_DIR");
-//         let input_path = format!(
-//             "{}/data/default/***REMOVED***.tif",
-//             manifest
-//         );
-//         let output_path = format!("{}/data/nodata_test_output.tif", manifest);
+        assert!(!buffer.is_empty(), "Output buffer must not be empty");
+        let decoder = PngDecoder::new(Cursor::new(&buffer)).unwrap();
+        assert_eq!(decoder.color_type(), ColorType::Rgba8, "Expected RGBA8");
 
-//         if !Path::new(&input_path).exists() {
-//             panic!("Test COG file not found at '{}'", input_path);
-//         }
+        drop(tmp);
+    }
 
-//         // First read the input file to identify nodata values
-//         let input_ds = Dataset::open(&input_path).expect("Failed to open input dataset");
-//         let input_band = input_ds.rasterband(1).expect("Failed to get input band");
-//         let nodata_value = input_band.no_data_value().map(|v| v as f32);
+    #[tokio::test]
+    async fn test_nodata_values_are_transparent() {
+        let (tmp, path) = generate_random_cog(256, 256);
+        let mut layer = make_layer(0.0, 100.0);
+        layer.path = path.clone();
+        layer.size_bytes = fs::metadata(&path).unwrap().len();
 
-//         println!("Nodata value in input: {:?}", nodata_value);
+        let buffer = process_cog(path.clone(), (0.0, 256.0, 0.0, 256.0), layer)
+            .await
+            .expect("process_cog should succeed");
 
-//         // Assert that nodata values are defined in this TIFF
-//         assert!(
-//             nodata_value.is_some(),
-//             "Expected to find nodata values in the TIFF, but none were detected"
-//         );
+        let img = image::load_from_memory(&buffer)
+            .expect("Failed to load image")
+            .to_rgba8();
+        let transparent_count = img.pixels().filter(|p| p.0[3] == 0).count();
+        assert!(
+            transparent_count > 0,
+            "Expected transparent pixels for no-data"
+        );
 
-//         // Use a small bbox to ensure we have some data to test with
-//         let switz_min_lon = 5.9559_f64;
-//         let switz_max_lon = 10.4921_f64;
-//         let switz_min_lat = 45.8179_f64;
-//         let switz_max_lat = 47.8084_f64;
+        drop(tmp);
+    }
 
-//         // Create a dummy Layer object
-//         let layer = Layer {
-//             layer: "***REMOVED***".to_string(),
-//             style: "default".to_string(),
-//             path: Path::new(&input_path).to_path_buf(),
-//             size_bytes: fs::metadata(&input_path).unwrap().len(),
-//             geometry: LayerGeometry {
-//                 crs_name: "EPSG".to_string(),
-//                 crs_code: 4326,
-//             },
-//             colour_stops: vec![
-//                 ColourStop {
-//                     value: 0.0,
-//                     red: 215,
-//                     green: 25,
-//                     blue: 28,
-//                     alpha: 255,
-//                 },
-//                 ColourStop {
-//                     value: 100.0,
-//                     red: 253,
-//                     green: 174,
-//                     blue: 97,
-//                     alpha: 255,
-//                 },
-//                 ColourStop {
-//                     value: 200.0,
-//                     red: 255,
-//                     green: 255,
-//                     blue: 191,
-//                     alpha: 255,
-//                 },
-//                 ColourStop {
-//                     value: 300.0,
-//                     red: 171,
-//                     green: 221,
-//                     blue: 164,
-//                     alpha: 255,
-//                 },
-//                 ColourStop {
-//                     value: 400.0,
-//                     red: 43,
-//                     green: 131,
-//                     blue: 186,
-//                     alpha: 255,
-//                 },
-//             ],
-//             min_value: 0.00048219285,
-//             max_value: 22613972.0,
-//         };
+    #[test]
+    fn test_nodata_mask_generation() {
+        let (tmp, path) = generate_random_cog(128, 128);
+        let ds = Dataset::open(&path).unwrap();
+        let band = ds.rasterband(1).unwrap();
 
-//         // Process the COG file
-//         let buffer = process_cog(
-//             input_path.clone(),
-//             (switz_min_lon, switz_max_lon, switz_min_lat, switz_max_lat),
-//             layer,
-//         )
-//         .await
-//         .expect("Failed to process COG");
+        let data: Vec<f32> = band
+            .read_as::<f32>((0, 0), (10, 10), (10, 10), None)
+            .unwrap()
+            .data()
+            .to_vec();
 
-//         // Verify the buffer is not empty
-//         assert!(!buffer.is_empty(), "Output buffer should not be empty");
+        let nodata_opt = band.no_data_value().map(|v| v as f32);
+        let mask: Vec<bool> = data
+            .iter()
+            .map(|&v| v.is_nan() || nodata_opt.map(|nd| v == nd).unwrap_or(false))
+            .collect();
 
-//         // Decode the PNG and check for transparency
-//         let img = image::load_from_memory(&buffer).expect("Failed to load image from buffer");
-//         let rgba_img = img.to_rgba8();
-
-//         // Count transparent pixels
-//         let transparent_pixel_count = rgba_img
-//             .pixels()
-//             .filter(|p| p.0[3] == 0) // Check alpha channel
-//             .count();
-
-//         // Count total pixels
-//         let total_pixels = rgba_img.width() * rgba_img.height();
-
-//         println!(
-//             "Number of transparent pixels: {}/{} ({:.2}%)",
-//             transparent_pixel_count,
-//             total_pixels,
-//             (transparent_pixel_count as f32 / total_pixels as f32) * 100.0
-//         );
-
-//         // Check for NaN or nodata-equal values in the raw data (extra diagnosis)
-//         if transparent_pixel_count == 0 {
-//             // We need to read the raw data again to diagnose the issue
-//             let ds = Dataset::open(&input_path).expect("Failed to open dataset");
-//             let band = ds.rasterband(1).expect("Failed to get band");
-//             let nodata_opt = band.no_data_value().map(|v| v as f32);
-
-//             // Sample some data from the image
-//             let buffer_sample = band
-//                 .read_as::<f32>((0, 0), (10, 10), (10, 10), None)
-//                 .expect("Failed to read sample data")
-//                 .data()
-//                 .to_vec();
-
-//             println!("Sample data: {:?}", buffer_sample);
-//             println!("Nodata value: {:?}", nodata_opt);
-
-//             // Count potential nodata values in sample
-//             let sample_nodata_count = buffer_sample
-//                 .iter()
-//                 .filter(|&&v| v.is_nan() || nodata_opt.map(|nd| v == nd).unwrap_or(false))
-//                 .count();
-
-//             println!(
-//                 "Sample contains {} potential nodata values",
-//                 sample_nodata_count
-//             );
-//         }
-
-//         // We expect some transparent pixels because nodata values exist
-//         assert!(
-//             transparent_pixel_count > 0,
-//             "No transparent pixels found in the output image. Nodata values are not being properly handled. \
-//              The image has {} total pixels. Check if the test area actually contains nodata values.",
-//             total_pixels
-//         );
-//     }
-//     // #[tokio::test]
-//     async fn test_nodata_mask_generation() {
-//         // 1) Locate the test file
-//         let manifest = env!("CARGO_MANIFEST_DIR");
-//         let path = Path::new(manifest)
-//             .join("data/default/***REMOVED***.tif");
-//         assert!(
-//             path.exists(),
-//             "Test GeoTIFF not found at '{}'",
-//             path.display()
-//         );
-
-//         // 2) Open the dataset and get band 1
-//         let ds = Dataset::open(&path).expect("Failed to open dataset");
-//         let band = ds.rasterband(1).expect("Failed to get raster band");
-
-//         // 3) Grab the no-data metadata (if any)
-//         let nodata_opt: Option<f32> = band.no_data_value().map(|v| v as f32);
-//         println!("no-data metadata: {:?}", nodata_opt);
-
-//         // 4) Closure to detect true no-data/null pixels
-//         let is_nodata = |raw: f32| raw.is_nan() || nodata_opt.map(|nd| raw == nd).unwrap_or(false);
-
-//         // 5) Read a large sample window approximating Europe's size
-//         let (raster_x, raster_y) = ds.raster_size();
-
-//         // Use a substantial portion of the raster for Europe-sized sample
-//         let sample_size = 500; // A reasonably large sample size in pixels
-//         let start_x = (raster_x / 4) as isize; // Start 1/4 into the image
-//         let start_y = (raster_y / 4) as isize;
-//         let window_x = sample_size.min(raster_x as usize - start_x as usize);
-//         let window_y = sample_size.min(raster_y as usize - start_y as usize);
-
-//         println!(
-//             "Reading Europe-sized sample: {}x{} pixels from position ({},{})",
-//             window_x, window_y, start_x, start_y
-//         );
-
-//         let data: Vec<f32> = band
-//             .read_as::<f32>(
-//                 (start_x, start_y),
-//                 (window_x, window_y),
-//                 (window_x, window_y),
-//                 None,
-//             )
-//             .expect("Failed to read Europe-sized window")
-//             .data()
-//             .to_vec();
-
-//         // 6) Build a boolean mask and assert we found some no-data pixels
-//         let mask: Vec<bool> = data.iter().map(|&v| is_nodata(v)).collect();
-//         let count = mask.iter().filter(|&&b| b).count();
-//         println!(
-//             "Found {} no-data pixels out of {} samples ({:.2}%)",
-//             count,
-//             data.len(),
-//             (count as f32 / data.len() as f32) * 100.0
-//         );
-//         assert!(
-//             count == 0,
-//             "No no-data pixels (NaN or matching metadata) found in the sample window"
-//         );
-
-//         // 7) Now you can hand `&mask` off to any other test you need:
-//         //    let result = your_other_function(&mask);
-//         //    assert!(result, "other function failed on this mask");
-//     }
-// }
+        assert_eq!(mask.len(), data.len(), "Mask length must match data length");
+        drop(tmp);
+    }
+}

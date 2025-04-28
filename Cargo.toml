@@ -30,3 +30,7 @@ indicatif = "0.17"
 comfy-table = { version = "7.1.4", features = [ "tty", "custom_styling"] }
 colorgrad = "0.7.1"
 clap = { version = "4.5.37", features = ["derive"] }
+
+[dev-dependencies]
+rand = "0.9.1"
+tempfile = "3.19.1"
