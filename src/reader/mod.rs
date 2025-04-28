@@ -21,6 +21,7 @@ pub struct ColourStop {
     pub alpha: u8,
 }
 
+#[derive(Debug, Clone)]
 pub struct Layer {
     pub layer: String,
     pub style: String,

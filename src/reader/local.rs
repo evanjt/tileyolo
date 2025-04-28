@@ -241,6 +241,8 @@ impl TileReader for LocalTileReader {
             .get(layer)
             .and_then(|styles| styles.first())
             .ok_or_else(|| format!("Layer not found: '{}'", layer))?;
+
+        println!("Layer: {:?}", layer_obj);
         let tile_path = &layer_obj.path;
 
         // reproject into MEM as f32 so we preserve negative values
