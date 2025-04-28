@@ -77,7 +77,9 @@ pub fn get_builtin_gradient(name: &str) -> Option<Box<dyn Gradient>> {
     })
 }
 
-pub fn print_style_summary(style_info: &HashMap<String, (usize, Vec<ColourStop>, f32, f32)>) {
+pub fn print_style_summary(
+    style_info: &HashMap<String, (usize, Vec<ColourStop>, f32, f32, usize)>,
+) {
     let mut table = Table::new();
     table
         .set_header(vec![
@@ -93,7 +95,7 @@ pub fn print_style_summary(style_info: &HashMap<String, (usize, Vec<ColourStop>,
 
     let mut warnings = Vec::new();
 
-    for (style, (count, stops, min_v, max_v)) in style_info {
+    for (style, (count, stops, min_v, max_v, num_cogs)) in style_info {
         let breaks_str = if is_builtin_palette(style) {
             "auto".to_string()
         } else {
@@ -144,6 +146,14 @@ pub fn print_style_summary(style_info: &HashMap<String, (usize, Vec<ColourStop>,
                 ));
                 style_row[0] = Cell::new("⚠️");
             }
+        }
+
+        if num_cogs < count {
+            warnings.push(format!(
+                "  ⚠️{}: {} of {} layers are COGs, performance will be degraded on large datasets",
+                style, num_cogs, count
+            ));
+            style_row[0] = Cell::new("⚠️");
         }
 
         table.add_row(style_row);

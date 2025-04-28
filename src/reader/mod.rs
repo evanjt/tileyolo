@@ -31,6 +31,7 @@ pub struct Layer {
     pub colour_stops: Vec<ColourStop>,
     pub min_value: f32,
     pub max_value: f32,
+    pub is_cog: bool,
 }
 
 #[derive(Debug, Clone)]

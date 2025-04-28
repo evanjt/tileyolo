@@ -84,16 +84,7 @@ impl LocalTileReader {
                 Vec::new()
             } else {
                 let style_path = entry.path().parent().unwrap().join("style.txt");
-                match super::style::parse_style_file(&style_path) {
-                    Ok(stops) => stops,
-                    Err(err) => {
-                        eprintln!(
-                            "⚠️ Missing or invalid style.txt for '{}': {} -> falling back to grayscale",
-                            file_stem, err
-                        );
-                        Vec::new()
-                    }
-                }
+                super::style::parse_style_file(&style_path).unwrap_or_default()
             };
 
             // --- common per-file logic ---
@@ -173,15 +164,15 @@ impl LocalTileReader {
                 colour_stops,
                 min_value,
                 max_value,
+                is_cog,
             };
 
             layers.entry(layer.layer.clone()).or_default().push(layer);
-            // --- end per-file ---
 
             pb.inc(1);
         }
-        // 4) Print collected info;
 
+        // Summary of loaded files
         pb.finish_with_message("✅ All files loaded!");
         println!(
             "📦 Total bytes: {:.2} MiB",
@@ -197,7 +188,9 @@ impl LocalTileReader {
         }
 
         // === build style_info ===
-        let mut style_info: HashMap<String, (usize, Vec<ColourStop>, f32, f32)> = HashMap::new();
+        let mut style_info: HashMap<String, (usize, Vec<ColourStop>, f32, f32, usize)> =
+            HashMap::new();
+
         for layer_list in layers.values() {
             for layer in layer_list {
                 let entry = style_info.entry(layer.style.clone()).or_insert((
@@ -205,11 +198,13 @@ impl LocalTileReader {
                     layer.colour_stops.clone(),
                     layer.min_value,
                     layer.max_value,
+                    0,
                 ));
                 entry.0 += 1;
                 entry.1 = layer.colour_stops.clone();
                 entry.2 = entry.2.min(layer.min_value);
                 entry.3 = entry.3.max(layer.max_value);
+                entry.4 += (layer.is_cog == true) as usize;
             }
         }
         print_style_summary(&style_info);
@@ -242,9 +237,7 @@ impl TileReader for LocalTileReader {
             .and_then(|styles| styles.first())
             .ok_or_else(|| format!("Layer not found: '{}'", layer))?;
 
-        println!("Layer: {:?}", layer_obj);
         let tile_path = &layer_obj.path;
-
         // reproject into MEM as f32 so we preserve negative values
         let (minx, miny, maxx, maxy) = tile_bounds_to_3857(z, x, y);
 
@@ -255,124 +248,6 @@ impl TileReader for LocalTileReader {
         )
         .await
         .map_err(|e| e.to_string())?;
-
-        // let src_ds = Dataset::open(tile_path).map_err(|e| e.to_string())?;
-        // let dst_srs = SpatialRef::from_epsg(3857).map_err(|e| e.to_string())?;
-        // let mem_driver = DriverManager::get_driver_by_name("MEM").map_err(|e| e.to_string())?;
-        // let mut dst_ds = mem_driver
-        //     .create_with_band_type::<f32, _>("", 256, 256, 1)
-        //     .map_err(|e| e.to_string())?;
-        // dst_ds
-        //     .set_projection(&dst_srs.to_wkt().map_err(|e| e.to_string())?)
-        //     .map_err(|e| e.to_string())?;
-        // dst_ds
-        //     .set_geo_transform(&[
-        //         minx,
-        //         (maxx - minx) / 256.0,
-        //         0.0,
-        //         maxy,
-        //         0.0,
-        //         (miny - maxy) / 256.0,
-        //     ])
-        //     .map_err(|e| e.to_string())?;
-        // println!("Coordintes af")
-        // unsafe {
-        //     gdal_sys::GDALReprojectImage(
-        //         src_ds.c_dataset(),
-        //         std::ptr::null(),
-        //         dst_ds.c_dataset(),
-        //         std::ptr::null(),
-        //         gdal_sys::GDALResampleAlg::GRA_NearestNeighbour,
-        //         0.0,
-        //         0.0,
-        //         None,
-        //         std::ptr::null_mut(),
-        //         std::ptr::null_mut(),
-        //     )
-        // };
-
-        // // pull out the band (f32) and its no-data value, if any
-        // let band = dst_ds
-        //     .rasterband(Config::default().default_raster_band)
-        //     .map_err(|e| e.to_string())?;
-        // let nodata_opt: Option<f32> = band.no_data_value().map(|v| v as f32);
-
-        // // read as f32 so negatives and zeros are preserved
-        // let buffer = band
-        //     .read_as::<f32>((0, 0), (256, 256), (256, 256), None)
-        //     .map_err(|e| e.to_string())?
-        //     .data()
-        //     .to_vec();
-
-        // let mut img = RgbaImage::new(256, 256);
-
-        // // helper to detect true no-data/null
-        // let is_nodata = |raw: f32| raw.is_nan() || nodata_opt.map(|nd| raw == nd).unwrap_or(false);
-
-        // if let Some(grad) = get_builtin_gradient(&layer_obj.style) {
-        //     // built-in palette
-        //     for (i, &raw) in buffer.iter().enumerate() {
-        //         let px = if is_nodata(raw) {
-        //             Rgba([0, 0, 0, 0])
-        //         } else {
-        //             let t = ((raw - layer_obj.min_value)
-        //                 / (layer_obj.max_value - layer_obj.min_value))
-        //                 .clamp(0.0, 1.0);
-        //             let [r, g, b, a] = grad.at(t).to_rgba8();
-        //             Rgba([r, g, b, a])
-        //         };
-        //         img.put_pixel((i % 256) as u32, (i / 256) as u32, px);
-        //     }
-        // } else if layer_obj.colour_stops.is_empty() {
-        //     // grayscale fallback
-        //     for (i, &raw) in buffer.iter().enumerate() {
-        //         let px = if is_nodata(raw) {
-        //             Rgba([0, 0, 0, 0])
-        //         } else {
-        //             let norm =
-        //                 (raw - layer_obj.min_value) / (layer_obj.max_value - layer_obj.min_value);
-        //             let lum = (norm.clamp(0.0, 1.0) * 255.0) as u8;
-        //             Rgba([lum, lum, lum, 255])
-        //         };
-        //         img.put_pixel((i % 256) as u32, (i / 256) as u32, px);
-        //     }
-        // } else {
-        //     // custom stops
-        //     let cs = &layer_obj.colour_stops;
-        //     let style_min = cs.first().unwrap().value;
-        //     let style_max = cs.last().unwrap().value;
-        //     for (i, &raw) in buffer.iter().enumerate() {
-        //         let px = if is_nodata(raw) {
-        //             Rgba([0, 0, 0, 0])
-        //         } else {
-        //             let norm =
-        //                 (raw - layer_obj.min_value) / (layer_obj.max_value - layer_obj.min_value);
-        //             let scaled = style_min + norm.clamp(0.0, 1.0) * (style_max - style_min);
-        //             // find which segment we're in
-        //             let mut colour = Rgba([0, 0, 0, 0]);
-        //             for w in cs.windows(2) {
-        //                 let a = &w[0];
-        //                 let b = &w[1];
-        //                 if (scaled >= a.value) && (scaled <= b.value) {
-        //                     let t = (scaled - a.value) / (b.value - a.value);
-        //                     let r = ((1.0 - t) * a.red as f32 + t * b.red as f32) as u8;
-        //                     let g = ((1.0 - t) * a.green as f32 + t * b.green as f32) as u8;
-        //                     let b_ = ((1.0 - t) * a.blue as f32 + t * b.blue as f32) as u8;
-        //                     let a_ = ((1.0 - t) * a.alpha as f32 + t * b.alpha as f32) as u8;
-        //                     colour = Rgba([r, g, b_, a_]);
-        //                     break;
-        //                 }
-        //             }
-        //             colour
-        //         };
-        //         img.put_pixel((i % 256) as u32, (i / 256) as u32, px);
-        //     }
-        // }
-
-        // let mut png_data = Vec::new();
-        // PngEncoder::new(Cursor::new(&mut png_data))
-        //     .write_image(img.as_raw(), 256, 256, ColorType::Rgba8.into())
-        //     .map_err(|e| e.to_string())?;
 
         Ok(TileResponse {
             content_type: "image/png".into(),

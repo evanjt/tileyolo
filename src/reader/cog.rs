@@ -1,76 +1,83 @@
 use super::Layer;
 use crate::{Config, reader::style::get_builtin_gradient};
-use gdal::{Dataset, errors::GdalError};
+use gdal::spatial_ref::SpatialRef;
+use gdal::{Dataset, DriverManager, errors::GdalError};
+use gdal_sys::{GDALReprojectImage, GDALResampleAlg};
 use image::{ColorType, ImageEncoder, Rgba, RgbaImage, codecs::png::PngEncoder};
-use proj::Proj;
 use std::{io::Cursor, path::PathBuf};
 use tokio::task;
+
 pub async fn process_cog(
     input_path: PathBuf,
     bbox_3857: (f64, f64, f64, f64),
     layer_obj: Layer,
 ) -> gdal::errors::Result<Vec<u8>> {
     task::spawn_blocking(move || {
-        println!("Input path: {:?}", input_path);
-        println!("BBox: {:?}", bbox_3857);
+        // Open source dataset, S3 is /vsis3/{bucket}/{key}, otherwise file.
+        let src_ds = Dataset::open(&input_path)?;
 
-        // Open COG and grab geo info
-        let ds = Dataset::open(&input_path)?;
-        let (raster_x, raster_y) = ds.raster_size();
-        let gt = ds.geo_transform()?;
-        let sref = ds.spatial_ref()?;
-        let band = ds.rasterband(Config::default().default_raster_band)?;
+        // Prepare an in‐memory 256×256 target in Web mercator 3857
+        let (minx, miny, maxx, maxy) = bbox_3857;
+        let tile_size: usize = 256;
+        let res_x = (maxx - minx) / (tile_size as f64);
+        let res_y = (maxy - miny) / (tile_size as f64);
 
-        // Reproject bbox into raster CRS
-        let (min_lon, min_lat, max_lon, max_lat) = bbox_3857;
-        let dst_epsg = sref.auth_code()?;
-        let dst_srs = format!("EPSG:{}", dst_epsg);
-        let transformer: Proj = Proj::new_known_crs("EPSG:3857", &dst_srs, None)
+        let mem_drv = DriverManager::get_driver_by_name("MEM")
             .map_err(|e| GdalError::BadArgument(e.to_string()))?;
-        let (x1, y1) = transformer
-            .convert((min_lon, min_lat))
+        let mut dst_ds = mem_drv
+            .create_with_band_type::<f32, _>(
+                "memory_dataset",
+                tile_size,
+                tile_size,
+                Config::default().default_raster_band,
+            )
             .map_err(|e| GdalError::BadArgument(e.to_string()))?;
-        let (x2, y2) = transformer
-            .convert((max_lon, max_lat))
-            .map_err(|e| GdalError::BadArgument(e.to_string()))?;
-        let (min_x, max_x) = (x1.min(x2), x1.max(x2));
-        let (min_y, max_y) = (y1.min(y2), y1.max(y2));
-        println!("Transformed BBox: {:?}", (min_x, max_x, min_y, max_y));
-        println!("Raster size: {}x{}", raster_x, raster_y);
-        println!("GeoTransform: {:?}", gt);
 
-        // Compute pixel window in the source COG
-        let raw_col0 = ((min_x - gt[0]) / gt[1]).floor() as isize;
-        let raw_row0 = ((max_y - gt[3]) / gt[5]).floor() as isize;
-        let raw_col1 = ((max_x - gt[0]) / gt[1]).ceil() as isize;
-        let raw_row1 = ((min_y - gt[3]) / gt[5]).ceil() as isize;
-        let col0 = raw_col0.clamp(0, raster_x as isize);
-        let row0 = raw_row0.clamp(0, raster_y as isize);
-        let col1 = raw_col1.clamp(0, raster_x as isize);
-        let row1 = raw_row1.clamp(0, raster_y as isize);
-        let ncols = (col1 - col0).max(0) as usize;
-        let nrows = (row1 - row0).max(0) as usize;
-        if ncols == 0 || nrows == 0 {
-            panic!("Empty window, nothing to read");
+        let merc_sref =
+            SpatialRef::from_epsg(3857).map_err(|e| GdalError::BadArgument(e.to_string()))?;
+        dst_ds
+            .set_projection(
+                &merc_sref
+                    .to_wkt()
+                    .map_err(|e| GdalError::BadArgument(e.to_string()))?,
+            )
+            .map_err(|e| GdalError::BadArgument(e.to_string()))?;
+        dst_ds
+            .set_geo_transform(&[minx, res_x, 0.0, maxy, 0.0, -res_y])
+            .map_err(|e| GdalError::BadArgument(e.to_string()))?;
+
+        // Setup reprojection of tile. Potential memory issues with unsafe code
+        // however gdalwarp is not available in gdal crate as yet.
+        unsafe {
+            GDALReprojectImage(
+                src_ds.c_dataset(),
+                std::ptr::null(),
+                dst_ds.c_dataset(),
+                std::ptr::null(),
+                GDALResampleAlg::GRA_NearestNeighbour,
+                0.0,
+                0.0,
+                None,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            );
         }
 
-        // Desired tile size
-        let tile_size = 256_usize;
+        // Read the warped 256×256 band as f32
+        let dst_band = dst_ds
+            .rasterband(1)
+            .map_err(|e| GdalError::BadArgument(e.to_string()))?;
+        let nodata_opt: Option<f32> = dst_band.no_data_value().map(|v| v as f32);
+        let is_nodata = |v: f32| v.is_nan() || nodata_opt.map(|nd| v == nd).unwrap_or(false);
 
-        // Read & resample the subset directly into a 256×256 buffer
-        let buffer: Vec<f32> = band
-            .read_as::<f32>((col0, row0), (ncols, nrows), (tile_size, tile_size), None)?
+        let buffer: Vec<f32> = dst_band
+            .read_as::<f32>((0, 0), (tile_size, tile_size), (tile_size, tile_size), None)?
             .data()
             .to_vec();
 
-        // Nodata test
-        let nodata_opt: Option<f32> = band.no_data_value().map(|v| v as f32);
-        let is_nodata = |raw: f32| raw.is_nan() || nodata_opt.map(|nd| raw == nd).unwrap_or(false);
+        // Colourise into a 256×256 RGBA image
+        let mut img = RgbaImage::new(tile_size as u32, tile_size as u32);
 
-        // Prepare a 256×256 RGBA canvas
-        let mut img: RgbaImage = RgbaImage::new(tile_size as u32, tile_size as u32);
-
-        // Colourise
         if let Some(grad) = get_builtin_gradient(&layer_obj.style) {
             for (i, &raw) in buffer.iter().enumerate() {
                 let px = if is_nodata(raw) {
@@ -87,7 +94,6 @@ pub async fn process_cog(
                 img.put_pixel(x, y, px);
             }
         } else if layer_obj.colour_stops.is_empty() {
-            // grayscale fallback
             for (i, &raw) in buffer.iter().enumerate() {
                 let px = if is_nodata(raw) {
                     Rgba([0, 0, 0, 0])
@@ -102,7 +108,6 @@ pub async fn process_cog(
                 img.put_pixel(x, y, px);
             }
         } else {
-            // custom colour stops
             let cs = &layer_obj.colour_stops;
             let style_min = cs.first().unwrap().value;
             let style_max = cs.last().unwrap().value;
@@ -117,7 +122,7 @@ pub async fn process_cog(
                     for w in cs.windows(2) {
                         let a = &w[0];
                         let b = &w[1];
-                        if (scaled >= a.value) && (scaled <= b.value) {
+                        if scaled >= a.value && scaled <= b.value {
                             let t = (scaled - a.value) / (b.value - a.value);
                             let r = ((1.0 - t) * a.red as f32 + t * b.red as f32) as u8;
                             let g = ((1.0 - t) * a.green as f32 + t * b.green as f32) as u8;
@@ -135,7 +140,6 @@ pub async fn process_cog(
             }
         }
 
-        // Encode PNG at 256×256
         let mut png_data = Vec::new();
         PngEncoder::new(Cursor::new(&mut png_data))
             .write_image(
