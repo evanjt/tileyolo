@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+pub mod cog;
 pub mod local;
 pub mod s3;
 pub mod style;

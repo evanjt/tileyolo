@@ -30,3 +30,4 @@ indicatif = "0.17"
 comfy-table = { version = ">=7.1.1", features = [ "tty"] }
 colorgrad = "0.7.1"
 clap = { version = "4.5.37", features = ["derive"] }
+proj = "0.30.0"
