@@ -127,7 +127,7 @@ pub fn print_style_summary(
         };
 
         let mut style_row = vec![
-            Cell::new(""),
+            Cell::new("✅"), // Default success overwritten to warning if needed
             Cell::new(style),
             Cell::new(*count),
             Cell::new(breaks_str),

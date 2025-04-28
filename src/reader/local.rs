@@ -1,17 +1,14 @@
 use super::cog::process_cog;
-use super::style::{get_builtin_gradient, is_builtin_palette, print_style_summary};
+use super::style::{is_builtin_palette, print_style_summary};
 use super::{ColourStop, Layer, LayerGeometry, TileReader, TileResponse};
 use crate::config::Config;
 use async_trait::async_trait;
-use colorgrad::Gradient;
-use gdal::spatial_ref::SpatialRef;
-use gdal::{Dataset, DriverManager, Metadata};
-use image::{ColorType, ImageEncoder, Rgba, RgbaImage, codecs::png::PngEncoder};
+use gdal::{Dataset, Metadata};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::collections::HashMap;
-use std::io::Cursor;
 use std::path::PathBuf;
 use walkdir::WalkDir; // for overview_count() / overview()
+
 pub struct LocalTileReader {
     layers: HashMap<String, Vec<Layer>>,
 }
@@ -50,7 +47,6 @@ impl LocalTileReader {
 
         let mut loaded_bytes = 0u64;
         let mut layers: HashMap<String, Vec<Layer>> = HashMap::new();
-        let mut collected_info = Vec::new();
 
         // 3) Process each file
         for entry in entries {
@@ -107,34 +103,6 @@ impl LocalTileReader {
                 .as_deref()
                 .map(|v| v.eq_ignore_ascii_case("COG"))
                 .unwrap_or(false);
-
-            // Grab the entire IMAGE_STRUCTURE block for later debugging
-            let image_structure_metadata =
-                ds.metadata_domain("IMAGE_STRUCTURE").unwrap_or_default();
-
-            // Count up internal overviews (pyramid levels)
-            let overviews = ds
-                .rasterband(1)
-                .and_then(|b| {
-                    let count = b.overview_count()?;
-                    let mut levels = Vec::with_capacity(count.try_into().unwrap());
-                    for i in 0..count {
-                        let ov = b.overview(i.try_into().unwrap())?;
-                        let (w, h) = ov.size();
-                        levels.push((i + 1, w, h));
-                    }
-                    Ok(Some(levels))
-                })
-                .unwrap_or(None);
-
-            // Store just what we care about
-            collected_info.push((
-                file_stem.clone(),
-                is_cog,
-                image_structure_metadata,
-                overviews,
-            ));
-
             let sref = ds
                 .spatial_ref()
                 .unwrap_or_else(|e| panic!("❌ CRS missing for '{}': {}", file_stem, e));
@@ -179,13 +147,6 @@ impl LocalTileReader {
             total_bytes as f64 / 1024.0 / 1024.0
         );
         println!("📦 Total layers: {}", layers.len());
-        println!("📦 Total styles: {}", collected_info.len());
-        for (layer_name, is_cog, image_structure_metadata, overviews) in &collected_info {
-            println!(
-                "Layer: {}, COG: {}, Overviews: {:?}, Metadata: {:?}",
-                layer_name, is_cog, overviews, image_structure_metadata
-            );
-        }
 
         // === build style_info ===
         let mut style_info: HashMap<String, (usize, Vec<ColourStop>, f32, f32, usize)> =
@@ -204,7 +165,7 @@ impl LocalTileReader {
                 entry.1 = layer.colour_stops.clone();
                 entry.2 = entry.2.min(layer.min_value);
                 entry.3 = entry.3.max(layer.max_value);
-                entry.4 += (layer.is_cog == true) as usize;
+                entry.4 += layer.is_cog as usize;
             }
         }
         print_style_summary(&style_info);
