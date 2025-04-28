@@ -43,7 +43,7 @@ To run with the docker image on port 8000 and mapping the local folder `./data`,
 use the command:
 
 ```
-docker run -v ./data:/app/data -p 8000:8000 tileyolo
+docker run -v ./data:/app/data -p 8000:8000 ghcr.io/evanjt/evanjt/tileyolo:latest
 ```
 
 ## Styles & Folder Structure
