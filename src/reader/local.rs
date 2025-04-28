@@ -1,3 +1,4 @@
+use super::cog::process_cog;
 use super::style::{get_builtin_gradient, is_builtin_palette, print_style_summary};
 use super::{ColourStop, Layer, LayerGeometry, TileReader, TileResponse};
 use crate::config::Config;
@@ -11,7 +12,6 @@ use std::collections::HashMap;
 use std::io::Cursor;
 use std::path::PathBuf;
 use walkdir::WalkDir; // for overview_count() / overview()
-
 pub struct LocalTileReader {
     layers: HashMap<String, Vec<Layer>>,
 }
@@ -246,124 +246,133 @@ impl TileReader for LocalTileReader {
         let tile_path = &layer_obj.path;
 
         // reproject into MEM as f32 so we preserve negative values
-        let (minx, miny, maxx, maxy) = tile_bounds(z, x, y);
-        let src_ds = Dataset::open(tile_path).map_err(|e| e.to_string())?;
-        let dst_srs = SpatialRef::from_epsg(3857).map_err(|e| e.to_string())?;
-        let mem_driver = DriverManager::get_driver_by_name("MEM").map_err(|e| e.to_string())?;
-        let mut dst_ds = mem_driver
-            .create_with_band_type::<f32, _>("", 256, 256, 1)
-            .map_err(|e| e.to_string())?;
-        dst_ds
-            .set_projection(&dst_srs.to_wkt().map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?;
-        dst_ds
-            .set_geo_transform(&[
-                minx,
-                (maxx - minx) / 256.0,
-                0.0,
-                maxy,
-                0.0,
-                (miny - maxy) / 256.0,
-            ])
-            .map_err(|e| e.to_string())?;
+        let (minx, miny, maxx, maxy) = tile_bounds_to_3857(z, x, y);
 
-        unsafe {
-            gdal_sys::GDALReprojectImage(
-                src_ds.c_dataset(),
-                std::ptr::null(),
-                dst_ds.c_dataset(),
-                std::ptr::null(),
-                gdal_sys::GDALResampleAlg::GRA_NearestNeighbour,
-                0.0,
-                0.0,
-                None,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-            )
-        };
+        let png_data = process_cog(
+            tile_path.clone(),
+            (minx, miny, maxx, maxy),
+            layer_obj.clone(),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
 
-        // pull out the band (f32) and its no-data value, if any
-        let band = dst_ds
-            .rasterband(Config::default().default_raster_band)
-            .map_err(|e| e.to_string())?;
-        let nodata_opt: Option<f32> = band.no_data_value().map(|v| v as f32);
+        // let src_ds = Dataset::open(tile_path).map_err(|e| e.to_string())?;
+        // let dst_srs = SpatialRef::from_epsg(3857).map_err(|e| e.to_string())?;
+        // let mem_driver = DriverManager::get_driver_by_name("MEM").map_err(|e| e.to_string())?;
+        // let mut dst_ds = mem_driver
+        //     .create_with_band_type::<f32, _>("", 256, 256, 1)
+        //     .map_err(|e| e.to_string())?;
+        // dst_ds
+        //     .set_projection(&dst_srs.to_wkt().map_err(|e| e.to_string())?)
+        //     .map_err(|e| e.to_string())?;
+        // dst_ds
+        //     .set_geo_transform(&[
+        //         minx,
+        //         (maxx - minx) / 256.0,
+        //         0.0,
+        //         maxy,
+        //         0.0,
+        //         (miny - maxy) / 256.0,
+        //     ])
+        //     .map_err(|e| e.to_string())?;
+        // println!("Coordintes af")
+        // unsafe {
+        //     gdal_sys::GDALReprojectImage(
+        //         src_ds.c_dataset(),
+        //         std::ptr::null(),
+        //         dst_ds.c_dataset(),
+        //         std::ptr::null(),
+        //         gdal_sys::GDALResampleAlg::GRA_NearestNeighbour,
+        //         0.0,
+        //         0.0,
+        //         None,
+        //         std::ptr::null_mut(),
+        //         std::ptr::null_mut(),
+        //     )
+        // };
 
-        // read as f32 so negatives and zeros are preserved
-        let buffer = band
-            .read_as::<f32>((0, 0), (256, 256), (256, 256), None)
-            .map_err(|e| e.to_string())?
-            .data()
-            .to_vec();
+        // // pull out the band (f32) and its no-data value, if any
+        // let band = dst_ds
+        //     .rasterband(Config::default().default_raster_band)
+        //     .map_err(|e| e.to_string())?;
+        // let nodata_opt: Option<f32> = band.no_data_value().map(|v| v as f32);
 
-        let mut img = RgbaImage::new(256, 256);
+        // // read as f32 so negatives and zeros are preserved
+        // let buffer = band
+        //     .read_as::<f32>((0, 0), (256, 256), (256, 256), None)
+        //     .map_err(|e| e.to_string())?
+        //     .data()
+        //     .to_vec();
 
-        // helper to detect true no-data/null
-        let is_nodata = |raw: f32| raw.is_nan() || nodata_opt.map(|nd| raw == nd).unwrap_or(false);
+        // let mut img = RgbaImage::new(256, 256);
 
-        if let Some(grad) = get_builtin_gradient(&layer_obj.style) {
-            // built-in palette
-            for (i, &raw) in buffer.iter().enumerate() {
-                let px = if is_nodata(raw) {
-                    Rgba([0, 0, 0, 0])
-                } else {
-                    let t = ((raw - layer_obj.min_value)
-                        / (layer_obj.max_value - layer_obj.min_value))
-                        .clamp(0.0, 1.0);
-                    let [r, g, b, a] = grad.at(t).to_rgba8();
-                    Rgba([r, g, b, a])
-                };
-                img.put_pixel((i % 256) as u32, (i / 256) as u32, px);
-            }
-        } else if layer_obj.colour_stops.is_empty() {
-            // grayscale fallback
-            for (i, &raw) in buffer.iter().enumerate() {
-                let px = if is_nodata(raw) {
-                    Rgba([0, 0, 0, 0])
-                } else {
-                    let norm =
-                        (raw - layer_obj.min_value) / (layer_obj.max_value - layer_obj.min_value);
-                    let lum = (norm.clamp(0.0, 1.0) * 255.0) as u8;
-                    Rgba([lum, lum, lum, 255])
-                };
-                img.put_pixel((i % 256) as u32, (i / 256) as u32, px);
-            }
-        } else {
-            // custom stops
-            let cs = &layer_obj.colour_stops;
-            let style_min = cs.first().unwrap().value;
-            let style_max = cs.last().unwrap().value;
-            for (i, &raw) in buffer.iter().enumerate() {
-                let px = if is_nodata(raw) {
-                    Rgba([0, 0, 0, 0])
-                } else {
-                    let norm =
-                        (raw - layer_obj.min_value) / (layer_obj.max_value - layer_obj.min_value);
-                    let scaled = style_min + norm.clamp(0.0, 1.0) * (style_max - style_min);
-                    // find which segment we're in
-                    let mut colour = Rgba([0, 0, 0, 0]);
-                    for w in cs.windows(2) {
-                        let a = &w[0];
-                        let b = &w[1];
-                        if (scaled >= a.value) && (scaled <= b.value) {
-                            let t = (scaled - a.value) / (b.value - a.value);
-                            let r = ((1.0 - t) * a.red as f32 + t * b.red as f32) as u8;
-                            let g = ((1.0 - t) * a.green as f32 + t * b.green as f32) as u8;
-                            let b_ = ((1.0 - t) * a.blue as f32 + t * b.blue as f32) as u8;
-                            let a_ = ((1.0 - t) * a.alpha as f32 + t * b.alpha as f32) as u8;
-                            colour = Rgba([r, g, b_, a_]);
-                            break;
-                        }
-                    }
-                    colour
-                };
-                img.put_pixel((i % 256) as u32, (i / 256) as u32, px);
-            }
-        }
+        // // helper to detect true no-data/null
+        // let is_nodata = |raw: f32| raw.is_nan() || nodata_opt.map(|nd| raw == nd).unwrap_or(false);
 
-        let mut png_data = Vec::new();
-        PngEncoder::new(Cursor::new(&mut png_data))
-            .write_image(img.as_raw(), 256, 256, ColorType::Rgba8.into())
-            .map_err(|e| e.to_string())?;
+        // if let Some(grad) = get_builtin_gradient(&layer_obj.style) {
+        //     // built-in palette
+        //     for (i, &raw) in buffer.iter().enumerate() {
+        //         let px = if is_nodata(raw) {
+        //             Rgba([0, 0, 0, 0])
+        //         } else {
+        //             let t = ((raw - layer_obj.min_value)
+        //                 / (layer_obj.max_value - layer_obj.min_value))
+        //                 .clamp(0.0, 1.0);
+        //             let [r, g, b, a] = grad.at(t).to_rgba8();
+        //             Rgba([r, g, b, a])
+        //         };
+        //         img.put_pixel((i % 256) as u32, (i / 256) as u32, px);
+        //     }
+        // } else if layer_obj.colour_stops.is_empty() {
+        //     // grayscale fallback
+        //     for (i, &raw) in buffer.iter().enumerate() {
+        //         let px = if is_nodata(raw) {
+        //             Rgba([0, 0, 0, 0])
+        //         } else {
+        //             let norm =
+        //                 (raw - layer_obj.min_value) / (layer_obj.max_value - layer_obj.min_value);
+        //             let lum = (norm.clamp(0.0, 1.0) * 255.0) as u8;
+        //             Rgba([lum, lum, lum, 255])
+        //         };
+        //         img.put_pixel((i % 256) as u32, (i / 256) as u32, px);
+        //     }
+        // } else {
+        //     // custom stops
+        //     let cs = &layer_obj.colour_stops;
+        //     let style_min = cs.first().unwrap().value;
+        //     let style_max = cs.last().unwrap().value;
+        //     for (i, &raw) in buffer.iter().enumerate() {
+        //         let px = if is_nodata(raw) {
+        //             Rgba([0, 0, 0, 0])
+        //         } else {
+        //             let norm =
+        //                 (raw - layer_obj.min_value) / (layer_obj.max_value - layer_obj.min_value);
+        //             let scaled = style_min + norm.clamp(0.0, 1.0) * (style_max - style_min);
+        //             // find which segment we're in
+        //             let mut colour = Rgba([0, 0, 0, 0]);
+        //             for w in cs.windows(2) {
+        //                 let a = &w[0];
+        //                 let b = &w[1];
+        //                 if (scaled >= a.value) && (scaled <= b.value) {
+        //                     let t = (scaled - a.value) / (b.value - a.value);
+        //                     let r = ((1.0 - t) * a.red as f32 + t * b.red as f32) as u8;
+        //                     let g = ((1.0 - t) * a.green as f32 + t * b.green as f32) as u8;
+        //                     let b_ = ((1.0 - t) * a.blue as f32 + t * b.blue as f32) as u8;
+        //                     let a_ = ((1.0 - t) * a.alpha as f32 + t * b.alpha as f32) as u8;
+        //                     colour = Rgba([r, g, b_, a_]);
+        //                     break;
+        //                 }
+        //             }
+        //             colour
+        //         };
+        //         img.put_pixel((i % 256) as u32, (i / 256) as u32, px);
+        //     }
+        // }
+
+        // let mut png_data = Vec::new();
+        // PngEncoder::new(Cursor::new(&mut png_data))
+        //     .write_image(img.as_raw(), 256, 256, ColorType::Rgba8.into())
+        //     .map_err(|e| e.to_string())?;
 
         Ok(TileResponse {
             content_type: "image/png".into(),
@@ -372,7 +381,7 @@ impl TileReader for LocalTileReader {
     }
 }
 
-fn tile_bounds(z: u8, x: u32, y: u32) -> (f64, f64, f64, f64) {
+fn tile_bounds_to_3857(z: u8, x: u32, y: u32) -> (f64, f64, f64, f64) {
     // Function for converting Web Mercator "Slippy map" tile coordinates
     // to bounding box
     // https://wiki.openstreetmap.org/wiki/Slippy_map_tilenames
