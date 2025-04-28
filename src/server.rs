@@ -26,15 +26,21 @@ impl TileServer {
         let reader: Arc<dyn TileReader> = self.reader;
         // Get all the layers from reader and list quantity
         let layers = reader.list_layers().await;
-        println!("📦 Total layers: {}", layers.len());
-        // println!("Layers {:?}", layers);
+
         let app: Router = Router::new()
             .route("/tiles/{layer}/{z}/{x}/{y}", get(tile_handler))
             .with_state(reader);
 
         let addr = SocketAddr::from(([0, 0, 0, 0], self.config.port));
         let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-        println!("🚀 TileYolo serving on {}", addr);
+
+        // Choose a random layer from layers vector for example URL
+        let random_layer = layers.keys().next().unwrap();
+        println!(
+            "🚀 TileYolo serving on {}. Example: http://{}/tiles/{}/{}/{}/{}",
+            addr, addr, random_layer, 0, 0, 0
+        );
+
         axum::serve(listener, app).await.unwrap();
 
         Ok(())

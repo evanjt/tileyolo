@@ -1,6 +1,6 @@
 [package]
 name = "tileyolo"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 description = "A simple raster-based XYZ tile server for serving GeoTIFFs"
 license = "MIT"
@@ -27,6 +27,10 @@ image = "0.25.6"
 tokio = { version = "1.44.2", features = ["full"] }
 walkdir = "2.5.0"
 indicatif = "0.17"
-comfy-table = { version = ">=7.1.1", features = [ "tty"] }
+comfy-table = { version = "7.1.4", features = [ "tty", "custom_styling"] }
 colorgrad = "0.7.1"
 clap = { version = "4.5.37", features = ["derive"] }
+
+[dev-dependencies]
+rand = "0.9.1"
+tempfile = "3.19.1"

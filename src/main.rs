@@ -19,14 +19,13 @@ struct Cli {
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    // start from your actual Config::default()
+    // Use the value from the command line argument (default from config is provided to it already)
     let config = Config {
         source: Some(Source::Local(Config::parse_path_to_absolute(
             &PathBuf::from(cli.data_folder),
         ))),
-        ..Config::default()
+        ..Config::default() // Then fill with the rest of the default config
     };
-    // println!("📦 Config: {:#?}", config);
 
     let server = TileServer::new(config)?;
     server.start().await

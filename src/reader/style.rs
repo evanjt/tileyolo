@@ -1,6 +1,6 @@
 use super::ColourStop;
 use colorgrad::{Gradient, preset};
-use comfy_table::{Cell, Table};
+use comfy_table::{Attribute, Cell, CellAlignment, Table};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
@@ -77,23 +77,37 @@ pub fn get_builtin_gradient(name: &str) -> Option<Box<dyn Gradient>> {
     })
 }
 
-pub fn print_style_summary(style_info: &HashMap<String, (usize, Vec<ColourStop>, f32, f32)>) {
+pub fn print_style_summary(
+    style_info: &HashMap<String, (usize, Vec<ColourStop>, f32, f32, usize)>,
+) {
     let mut table = Table::new();
     table
         .set_header(vec![
-            Cell::new("").add_attribute(comfy_table::Attribute::Bold),
-            Cell::new("Style").add_attribute(comfy_table::Attribute::Bold),
-            Cell::new("Layers").add_attribute(comfy_table::Attribute::Bold),
-            Cell::new("Breaks").add_attribute(comfy_table::Attribute::Bold),
-            Cell::new("Min").add_attribute(comfy_table::Attribute::Bold),
-            Cell::new("Max").add_attribute(comfy_table::Attribute::Bold),
-            Cell::new("Colourbar").add_attribute(comfy_table::Attribute::Bold),
+            Cell::new("")
+                .add_attribute(Attribute::Bold)
+                .set_alignment(CellAlignment::Center),
+            Cell::new("Style")
+                .add_attribute(Attribute::Bold)
+                .set_alignment(CellAlignment::Center),
+            Cell::new("Layers")
+                .add_attribute(Attribute::Bold)
+                .set_alignment(CellAlignment::Center),
+            Cell::new("Breaks")
+                .add_attribute(Attribute::Bold)
+                .set_alignment(CellAlignment::Center),
+            Cell::new("Min")
+                .add_attribute(Attribute::Bold)
+                .set_alignment(CellAlignment::Center),
+            Cell::new("Max")
+                .add_attribute(Attribute::Bold)
+                .set_alignment(CellAlignment::Center),
+            Cell::new("Colourbar").add_attribute(Attribute::Bold),
         ])
-        .load_preset(comfy_table::presets::NOTHING);
+        .load_preset(comfy_table::presets::ASCII_BORDERS_ONLY_CONDENSED);
 
     let mut warnings = Vec::new();
 
-    for (style, (count, stops, min_v, max_v)) in style_info {
+    for (style, (count, stops, min_v, max_v, num_cogs)) in style_info {
         let breaks_str = if is_builtin_palette(style) {
             "auto".to_string()
         } else {
@@ -125,12 +139,12 @@ pub fn print_style_summary(style_info: &HashMap<String, (usize, Vec<ColourStop>,
         };
 
         let mut style_row = vec![
-            Cell::new(""),
+            Cell::new("✅").set_alignment(CellAlignment::Center), // Default success overwritten to warning if needed
             Cell::new(style),
-            Cell::new(*count),
-            Cell::new(breaks_str),
-            Cell::new(min_v),
-            Cell::new(max_v),
+            Cell::new(*count).set_alignment(CellAlignment::Center),
+            Cell::new(breaks_str).set_alignment(CellAlignment::Center),
+            Cell::new(min_v).set_alignment(CellAlignment::Center),
+            Cell::new(max_v).set_alignment(CellAlignment::Center),
             Cell::new(bar),
         ];
 
@@ -144,6 +158,14 @@ pub fn print_style_summary(style_info: &HashMap<String, (usize, Vec<ColourStop>,
                 ));
                 style_row[0] = Cell::new("⚠️");
             }
+        }
+
+        if num_cogs < count {
+            warnings.push(format!(
+                "  ⚠️{}: {} of {} layers are COGs, performance will be degraded on large datasets",
+                style, num_cogs, count
+            ));
+            style_row[0] = Cell::new("⚠️");
         }
 
         table.add_row(style_row);

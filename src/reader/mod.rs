@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+pub mod cog;
 pub mod local;
 pub mod s3;
 pub mod style;
@@ -20,6 +21,7 @@ pub struct ColourStop {
     pub alpha: u8,
 }
 
+#[derive(Debug, Clone)]
 pub struct Layer {
     pub layer: String,
     pub style: String,
@@ -29,6 +31,8 @@ pub struct Layer {
     pub colour_stops: Vec<ColourStop>,
     pub min_value: f32,
     pub max_value: f32,
+    pub is_cog: bool,
+    pub last_modified: std::time::SystemTime,
 }
 
 #[derive(Debug, Clone)]

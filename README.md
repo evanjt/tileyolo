@@ -18,6 +18,12 @@ cargo add tileyolo
 
 ## Usage
 
+#### Dependencies
+
+* GDAL
+
+### Cargo
+
 1. `cd` into your data directory (parent of style subfolders).
 2. Run:
    ```bash
@@ -30,6 +36,15 @@ cargo add tileyolo
    - **`{layer}`** is the TIFF filename (without extension).
 
 TileYolo will auto-detect styles (`style.txt` or built-in palettes), handle no-data values, and serve tiles on port 8000.
+
+### Docker
+
+To run with the docker image on port 8000 and mapping the local folder `./data`, 
+use the command:
+
+```
+docker run -v ./data:/app/data -p 8000:8000 tileyolo
+```
 
 ## Styles & Folder Structure
 
@@ -54,23 +69,7 @@ Organize your GeoTIFFs into style-specific subfolders:
 
 ## Sample Output
 
-```text
-$ tileyolo
-✅ All files loaded!
-[████████████████████████████████████████] 28/28 100%
-Style summary:
-     Style    Layers  Breaks                        Min        Max       Colourbar
-⚠   default  27      0,100,200,300,400             -80.59     22613972   █████
-     viridis  1       auto                          0.00       746.10    ██████████
-
-Warnings:
-  ⚠ default: Colour stops [0.00…400.00] do NOT cover data range [-80.59…22613972.00]
-  
-📦 Total layers: 28
-🚀 Serving tiles at http://0.0.0.0:8000
-```
-
-(_More colourful in a true ANSI terminal._)
+![Startup example with file tree](./docs/startup.svg)
 
 ## Configuration
 
@@ -108,8 +107,8 @@ I needed a zero‑config, lightweight XYZ tile server for GeoTIFFs. TileYolo doe
 
 - Speed up startup with caching
 - Tile caching for performance
-- S3 and COG support
-- Additional built-in palettes
+- S3 ~~and COG~~ support
+- ~~Additional built-in palettes~~
 - Contributions welcome
 
 ## Caveats
@@ -118,3 +117,4 @@ I needed a zero‑config, lightweight XYZ tile server for GeoTIFFs. TileYolo doe
 - Output CRS is **EPSG:3857** (Web Mercator)
 - Input TIFFs must define a CRS
 - Tested on small to medium rasters; large rasters may require more resources
+- Reprojection using [nearest neighbour](https://gdal.org/en/stable/programs/gdalwarp.html#cmdoption-gdalwarp-r)
