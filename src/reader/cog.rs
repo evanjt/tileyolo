@@ -27,40 +27,39 @@ pub async fn process_cog(
         let dst_srs = format!("EPSG:{}", dst_epsg);
         let transformer: Proj = Proj::new_known_crs("EPSG:3857", &dst_srs, None)
             .map_err(|e| GdalError::BadArgument(e.to_string()))?;
-
         let (x1, y1) = transformer
             .convert((min_lon, min_lat))
             .map_err(|e| GdalError::BadArgument(e.to_string()))?;
         let (x2, y2) = transformer
             .convert((max_lon, max_lat))
             .map_err(|e| GdalError::BadArgument(e.to_string()))?;
-
         let (min_x, max_x) = (x1.min(x2), x1.max(x2));
         let (min_y, max_y) = (y1.min(y2), y1.max(y2));
         println!("Transformed BBox: {:?}", (min_x, max_x, min_y, max_y));
         println!("Raster size: {}x{}", raster_x, raster_y);
         println!("GeoTransform: {:?}", gt);
 
-        // Compute pixel window
+        // Compute pixel window in the source COG
         let raw_col0 = ((min_x - gt[0]) / gt[1]).floor() as isize;
         let raw_row0 = ((max_y - gt[3]) / gt[5]).floor() as isize;
         let raw_col1 = ((max_x - gt[0]) / gt[1]).ceil() as isize;
         let raw_row1 = ((min_y - gt[3]) / gt[5]).ceil() as isize;
-
         let col0 = raw_col0.clamp(0, raster_x as isize);
         let row0 = raw_row0.clamp(0, raster_y as isize);
         let col1 = raw_col1.clamp(0, raster_x as isize);
         let row1 = raw_row1.clamp(0, raster_y as isize);
-
         let ncols = (col1 - col0).max(0) as usize;
         let nrows = (row1 - row0).max(0) as usize;
         if ncols == 0 || nrows == 0 {
             panic!("Empty window, nothing to read");
         }
 
-        // Read the subset as f32
+        // Desired tile size
+        let tile_size = 256_usize;
+
+        // Read & resample the subset directly into a 256×256 buffer
         let buffer: Vec<f32> = band
-            .read_as::<f32>((col0, row0), (ncols, nrows), (ncols, nrows), None)?
+            .read_as::<f32>((col0, row0), (ncols, nrows), (tile_size, tile_size), None)?
             .data()
             .to_vec();
 
@@ -68,8 +67,8 @@ pub async fn process_cog(
         let nodata_opt: Option<f32> = band.no_data_value().map(|v| v as f32);
         let is_nodata = |raw: f32| raw.is_nan() || nodata_opt.map(|nd| raw == nd).unwrap_or(false);
 
-        // Prepare an RGBA canvas sized to our window
-        let mut img: RgbaImage = RgbaImage::new(ncols as u32, nrows as u32);
+        // Prepare a 256×256 RGBA canvas
+        let mut img: RgbaImage = RgbaImage::new(tile_size as u32, tile_size as u32);
 
         // Colourise
         if let Some(grad) = get_builtin_gradient(&layer_obj.style) {
@@ -83,8 +82,8 @@ pub async fn process_cog(
                     let [r, g, b, a] = grad.at(t).to_rgba8();
                     Rgba([r, g, b, a])
                 };
-                let x = (i % ncols) as u32;
-                let y = (i / ncols) as u32;
+                let x = (i % tile_size) as u32;
+                let y = (i / tile_size) as u32;
                 img.put_pixel(x, y, px);
             }
         } else if layer_obj.colour_stops.is_empty() {
@@ -98,8 +97,8 @@ pub async fn process_cog(
                     let lum = (norm.clamp(0.0, 1.0) * 255.0) as u8;
                     Rgba([lum, lum, lum, 255])
                 };
-                let x = (i % ncols) as u32;
-                let y = (i / ncols) as u32;
+                let x = (i % tile_size) as u32;
+                let y = (i / tile_size) as u32;
                 img.put_pixel(x, y, px);
             }
         } else {
@@ -130,19 +129,19 @@ pub async fn process_cog(
                     }
                     colour
                 };
-                let x = (i % ncols) as u32;
-                let y = (i / ncols) as u32;
+                let x = (i % tile_size) as u32;
+                let y = (i / tile_size) as u32;
                 img.put_pixel(x, y, px);
             }
         }
 
-        // Encode PNG with the correct dimensions
+        // Encode PNG at 256×256
         let mut png_data = Vec::new();
         PngEncoder::new(Cursor::new(&mut png_data))
             .write_image(
                 img.as_raw(),
-                ncols as u32,
-                nrows as u32,
+                tile_size as u32,
+                tile_size as u32,
                 ColorType::Rgba8.into(),
             )
             .map_err(|e| GdalError::BadArgument(e.to_string()))?;
