@@ -32,6 +32,7 @@ pub struct Layer {
     pub min_value: f32,
     pub max_value: f32,
     pub is_cog: bool,
+    pub last_modified: std::time::SystemTime,
 }
 
 #[derive(Debug, Clone)]

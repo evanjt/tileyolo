@@ -93,16 +93,16 @@ impl LocalTileReader {
                 }
             };
 
-            // ←== START COG DETECTION VIA IMAGE_STRUCTURE METADATA ==→
-
             // Pull out just the single "LAYOUT" item from the "IMAGE_STRUCTURE" domain
+            // then true if LAYOUT=COG (case-insensitive), false otherwise
             let layout_opt = ds.metadata_item("LAYOUT", "IMAGE_STRUCTURE");
 
-            // True if LAYOUT=COG (case-insensitive), false otherwise
             let is_cog = layout_opt
                 .as_deref()
                 .map(|v| v.eq_ignore_ascii_case("COG"))
                 .unwrap_or(false);
+
+            // Get CRS info
             let sref = ds
                 .spatial_ref()
                 .unwrap_or_else(|e| panic!("❌ CRS missing for '{}': {}", file_stem, e));
@@ -120,6 +120,14 @@ impl LocalTileReader {
                 .map(|stats| (stats.min as f32, stats.max as f32))
                 .unwrap_or_else(|e| panic!("❌ Failed to get min/max for '{}': {}", file_stem, e));
 
+            // Get the last modified time
+            let last_modified = match entry.metadata() {
+                Ok(meta) => meta
+                    .modified()
+                    .unwrap_or_else(|_| std::time::SystemTime::now()),
+                Err(_) => std::time::SystemTime::now(),
+            };
+
             let layer = Layer {
                 layer: file_stem.clone(),
                 style: style_name.to_string(),
@@ -133,10 +141,12 @@ impl LocalTileReader {
                 min_value,
                 max_value,
                 is_cog,
+                last_modified,
             };
 
             layers.entry(layer.layer.clone()).or_default().push(layer);
 
+            // Increment the progress bar
             pb.inc(1);
         }
 
