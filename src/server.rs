@@ -23,29 +23,35 @@ impl TileServer {
     }
 
     pub async fn start(self) -> anyhow::Result<()> {
-        let reader = self.reader;
-
         // Tile-serving router with state
         let app = Router::new()
             .route("/tiles/{layer}/{z}/{x}/{y}", get(tile_handler))
             .route("/layers", get(get_all_layers))
             .route("/map", get(webmap_handler))
-            .with_state(reader.to_owned());
+            .with_state(self.reader.to_owned());
 
         let addr = SocketAddr::from(([0, 0, 0, 0], self.config.port));
         let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
 
         // Choose a random layer for the example URL
-        let layers = reader.list_layers().await;
+        let layers = self.reader.list_layers().await;
         let random_layer = layers.keys().next().unwrap();
 
-        println!("🚀 TileYolo serving on {}", addr);
         println!(
-            "🗺️ QGIS XYZ-tiles path on random layer: http://{}/tiles/{}/{{z}}/{{x}}/{{y}}",
-            addr, random_layer
+            r#"
+    🚀 TileYolo serving on {}
+
+    🗺️ QGIS XYZ-tiles path (layer: {})
+       → http://{}/tiles/{}/{{z}}/{{x}}/{{y}}
+
+    🌍 Browse all loaded layers visually
+       → http://{}/map
+
+    📚 Query for all layers (JSON)
+       → http://{}/layers
+            "#,
+            addr, random_layer, addr, random_layer, addr, addr
         );
-        println!("🌍 Browse layers visually at: http://{}/map", addr);
-        println!("📚 Get all layers at: http://{}/layers", addr);
 
         axum::serve(listener, app.into_make_service())
             .await
