@@ -30,6 +30,7 @@ indicatif = "0.17"
 comfy-table = { version = "7.1.4", features = [ "tty", "custom_styling"] }
 colorgrad = "0.7.1"
 clap = { version = "4.5.37", features = ["derive"] }
+tower-http = { version = "0.6.1", features = ["fs"] }
 
 [dev-dependencies]
 rand = "0.9.1"

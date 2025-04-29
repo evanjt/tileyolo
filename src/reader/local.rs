@@ -7,7 +7,7 @@ use gdal::{Dataset, Metadata};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use walkdir::WalkDir; // for overview_count() / overview()
+use walkdir::{DirEntry, WalkDir}; // for overview_count() / overview()
 
 pub struct LocalTileReader {
     layers: HashMap<String, Vec<Layer>>,
@@ -16,7 +16,7 @@ pub struct LocalTileReader {
 impl LocalTileReader {
     pub fn new(root: PathBuf) -> Self {
         // 1) Gather all .tif/.tiff files under root
-        let entries: Vec<_> = WalkDir::new(&root)
+        let entries: Vec<walkdir::DirEntry> = WalkDir::new(&root)
             .min_depth(2)
             .into_iter()
             .filter_map(Result::ok)
@@ -60,6 +60,7 @@ impl LocalTileReader {
             // track bytes read
             let file_bytes = entry.metadata().map(|m| m.len()).unwrap_or(0);
             loaded_bytes += file_bytes;
+
             let message = format!(
                 "Reading {:<30}  ({:.2}/{:.2} MiB)",
                 file_stem,
@@ -68,86 +69,13 @@ impl LocalTileReader {
             );
             pb.set_message(message);
 
-            // Determine style from folder name
-            let style_name = path
-                .parent()
-                .and_then(|p| p.file_name())
-                .and_then(|s| s.to_str())
-                .unwrap_or("default");
-
-            // Load colour stops or mark as builtin palette
-            let colour_stops = if is_builtin_palette(style_name) {
-                Vec::new()
-            } else {
-                let style_path = entry.path().parent().unwrap().join("style.txt");
-                super::style::parse_style_file(&style_path).unwrap_or_default()
-            };
-
-            // --- common per-file logic ---
-            let ds = match Dataset::open(&path) {
-                Ok(ds) => ds,
-                Err(err) => {
-                    eprintln!("❌ Failed to open {:?}: {}", path, err);
-                    pb.inc(1);
-                    continue;
-                }
-            };
-
-            // Pull out just the single "LAYOUT" item from the "IMAGE_STRUCTURE" domain
-            // then true if LAYOUT=COG (case-insensitive), false otherwise
-            let layout_opt = ds.metadata_item("LAYOUT", "IMAGE_STRUCTURE");
-
-            let is_cog = layout_opt
-                .as_deref()
-                .map(|v| v.eq_ignore_ascii_case("COG"))
-                .unwrap_or(false);
-
-            // Get CRS info
-            let sref = ds
-                .spatial_ref()
-                .unwrap_or_else(|e| panic!("❌ CRS missing for '{}': {}", file_stem, e));
-            let auth_name = sref.auth_name().unwrap_or("UNKNOWN".to_string());
-            let auth_code = sref.auth_code().unwrap_or(0);
-
-            let band = ds
-                .rasterband(Config::default().default_raster_band)
-                .unwrap_or_else(|e| {
-                    panic!("❌ Failed to get raster band for '{}': {}", file_stem, e)
-                });
-
-            let (min_value, max_value) = band
-                .compute_raster_min_max(false)
-                .map(|stats| (stats.min as f32, stats.max as f32))
-                .unwrap_or_else(|e| panic!("❌ Failed to get min/max for '{}': {}", file_stem, e));
-
-            // Get the last modified time
-            let last_modified = match entry.metadata() {
-                Ok(meta) => meta
-                    .modified()
-                    .unwrap_or_else(|_| std::time::SystemTime::now()),
-                Err(_) => std::time::SystemTime::now(),
-            };
-
-            let layer = Layer {
-                layer: file_stem.clone(),
-                style: style_name.to_string(),
-                path: path.clone(),
-                size_bytes: file_bytes,
-                geometry: LayerGeometry {
-                    crs_name: auth_name.to_string(),
-                    crs_code: auth_code,
-                },
-                colour_stops,
-                min_value,
-                max_value,
-                is_cog,
-                last_modified,
-            };
+            let layer = Self::get_tiff_metadata(entry).unwrap_or_else(|e| {
+                pb.finish_with_message(format!("❌ Failed to read file: {}", e));
+                panic!("Failed to read file: {}", e);
+            });
 
             layers.entry(layer.layer.clone()).or_default().push(layer);
-
-            // Increment the progress bar
-            pb.inc(1);
+            pb.inc(1); // Increment the progress bar
         }
 
         // Summary of loaded files
@@ -183,6 +111,92 @@ impl LocalTileReader {
 
         Self { layers }
     }
+
+    fn get_tiff_metadata(entry: DirEntry) -> anyhow::Result<Layer> {
+        // Try open the file as a GDAL dataset
+        let path = entry.path().to_path_buf();
+        let ds = match Dataset::open(&path) {
+            Ok(ds) => ds,
+            Err(err) => {
+                return Err(anyhow::anyhow!("Failed to open {:?}: {}", path, err));
+            }
+        };
+
+        let file_stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("<unknown>")
+            .to_string();
+
+        // track bytes read
+        let file_bytes = entry.metadata().map(|m| m.len()).unwrap_or(0);
+
+        // Determine style from folder name
+        let style_name = path
+            .parent()
+            .and_then(|p| p.file_name())
+            .and_then(|s| s.to_str())
+            .unwrap_or("default");
+
+        // Load colour stops or mark as builtin palette
+        let colour_stops = if is_builtin_palette(style_name) {
+            Vec::new()
+        } else {
+            let style_path = entry.path().parent().unwrap().join("style.txt");
+            super::style::parse_style_file(&style_path).unwrap_or_default()
+        };
+
+        // Pull out just the single "LAYOUT" item from the "IMAGE_STRUCTURE" domain
+        // then true if LAYOUT=COG (case-insensitive), false otherwise
+        let layout_opt = ds.metadata_item("LAYOUT", "IMAGE_STRUCTURE");
+
+        let is_cog = layout_opt
+            .as_deref()
+            .map(|v| v.eq_ignore_ascii_case("COG"))
+            .unwrap_or(false);
+
+        // Get CRS info
+        let sref = ds
+            .spatial_ref()
+            .unwrap_or_else(|e| panic!("❌ CRS missing for '{}': {}", file_stem, e));
+        let auth_name = sref.auth_name().unwrap_or("UNKNOWN".to_string());
+        let auth_code = sref.auth_code().unwrap_or(0);
+
+        let band = ds
+            .rasterband(Config::default().default_raster_band)
+            .unwrap_or_else(|e| panic!("❌ Failed to get raster band for '{}': {}", file_stem, e));
+
+        let (min_value, max_value) = band
+            .compute_raster_min_max(false)
+            .map(|stats| (stats.min as f32, stats.max as f32))
+            .unwrap_or_else(|e| panic!("❌ Failed to get min/max for '{}': {}", file_stem, e));
+
+        // Get the last modified time
+        let last_modified = match entry.metadata() {
+            Ok(meta) => meta
+                .modified()
+                .unwrap_or_else(|_| std::time::SystemTime::now()),
+            Err(_) => std::time::SystemTime::now(),
+        };
+
+        let layer = Layer {
+            layer: file_stem.clone(),
+            style: style_name.to_string(),
+            path: path.clone(),
+            size_bytes: file_bytes,
+            geometry: LayerGeometry {
+                crs_name: auth_name.to_string(),
+                crs_code: auth_code,
+            },
+            colour_stops,
+            min_value,
+            max_value,
+            is_cog,
+            last_modified,
+        };
+
+        Ok(layer)
+    }
 }
 
 #[async_trait]
@@ -202,7 +216,7 @@ impl TileReader for LocalTileReader {
         x: u32,
         y: u32,
         _style: Option<&str>,
-    ) -> Result<TileResponse, String> {
+    ) -> anyhow::Result<TileResponse, String> {
         let layer_obj = self
             .layers
             .get(layer)
