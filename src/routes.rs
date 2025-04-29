@@ -46,5 +46,13 @@ pub(super) async fn get_all_layers(State(reader): State<Arc<dyn TileReader>>) ->
         }
     }
 
+    // Sort the layers alphabetically case insensitive
+    all_layers.sort_by(|a, b| {
+        a.layer
+            .to_lowercase()
+            .cmp(&b.layer.to_lowercase())
+            .then(a.style.to_lowercase().cmp(&b.style.to_lowercase()))
+    });
+
     (StatusCode::OK, Json(all_layers))
 }
