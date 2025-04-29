@@ -1,4 +1,5 @@
 pub mod config;
+mod map;
 pub mod reader;
 pub mod routes;
 pub mod server;

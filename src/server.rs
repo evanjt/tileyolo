@@ -8,6 +8,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tower_http::services::ServeFile;
+
 pub struct TileServer {
     config: Config,
     reader: Arc<dyn TileReader>,
