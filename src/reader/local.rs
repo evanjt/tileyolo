@@ -7,7 +7,7 @@ use gdal::{Dataset, Metadata};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use walkdir::{DirEntry, WalkDir}; // for overview_count() / overview()
+use walkdir::{DirEntry, WalkDir};
 
 pub struct LocalTileReader {
     layers: HashMap<String, Vec<Layer>>,
@@ -209,6 +209,7 @@ impl TileReader for LocalTileReader {
         }
         result
     }
+
     async fn get_tile(
         &self,
         layer: &str,

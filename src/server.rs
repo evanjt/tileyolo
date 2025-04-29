@@ -1,7 +1,7 @@
 use crate::config::{Config, Source};
 use crate::reader::TileReader;
 use crate::reader::local::LocalTileReader;
-use crate::routes::tile_handler;
+use crate::routes::{get_all_layers, tile_handler};
 use axum::{Router, routing::get};
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -25,15 +25,13 @@ impl TileServer {
     }
 
     pub async fn start(self) -> anyhow::Result<()> {
-        let reader = self.reader.clone();
-
-        // Get all the layers from reader and list quantity
-        let layers = reader.list_layers().await;
+        let reader = self.reader;
 
         // Tile-serving router with state
         let tiles = Router::new()
             .route("/tiles/{layer}/{z}/{x}/{y}", get(tile_handler))
-            .with_state(reader);
+            .route("/layers", get(get_all_layers))
+            .with_state(reader.to_owned());
 
         // Serve `./map`, falling back to index.html for SPA routes
         // Resolve the `map` directory at compile time:
@@ -52,13 +50,16 @@ impl TileServer {
         let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
 
         // Choose a random layer for the example URL
+        let layers = reader.list_layers().await;
         let random_layer = layers.keys().next().unwrap();
+
         println!("🚀 TileYolo serving on {}", addr);
         println!(
             "🗺️ QGIS XYZ-tiles path on random layer: http://{}/tiles/{}/{{z}}/{{x}}/{{y}}",
             addr, random_layer
         );
         println!("🌍 Browse layers visually at: http://{}/map", addr);
+        println!("📚 Get all layers at: http://{}/layers", addr);
 
         axum::serve(listener, app.into_make_service())
             .await

@@ -108,7 +108,7 @@ pub fn print_style_summary(
     let mut warnings = Vec::new();
 
     for (style, (count, stops, min_v, max_v, num_cogs)) in style_info {
-        let breaks_str = if is_builtin_palette(style) {
+        let breaks_str = if is_builtin_palette(style) || stops.is_empty() {
             "auto".to_string()
         } else {
             stops
@@ -117,7 +117,6 @@ pub fn print_style_summary(
                 .collect::<Vec<_>>()
                 .join(", ")
         };
-
         let bar = if let Some(grad) = get_builtin_gradient(style) {
             let mut s = String::new();
             let n = 10;
@@ -125,6 +124,15 @@ pub fn print_style_summary(
                 let t = i as f32 / (n - 1) as f32;
                 let [r, g, b, _] = grad.at(t).to_rgba8();
                 s.push_str(&format!("\x1b[38;2;{};{};{}m█\x1b[0m", r, g, b));
+            }
+            s
+        } else if stops.is_empty() {
+            // fallback to grayscale gradient
+            let mut s = String::new();
+            let n = 10;
+            for i in 0..n {
+                let v = (255.0 * i as f32 / (n - 1) as f32).round() as u8;
+                s.push_str(&format!("\x1b[38;2;{0};{0};{0}m█\x1b[0m", v));
             }
             s
         } else {

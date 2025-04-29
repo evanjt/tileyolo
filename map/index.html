@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>TileYolo Demo</title>
+  <title>TileYolo</title>
   <link
     rel="stylesheet"
     href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
@@ -12,19 +12,23 @@
   />
   <style>
     html, body { height: 100%; margin: 0; padding: 0; }
-    #controls { position: absolute; top: 10px; left: 50px; z-index: 1000; background: white; padding: 6px; border-radius: 4px; box-shadow: 0 1px 4px rgba(0,0,0,0.3); }
+    #controls { 
+      position: absolute;
+      top: 10px; 
+      left: 50px;  
+      z-index: 1000; 
+      background: white; 
+      padding: 6px; 
+      border-radius: 4px; 
+      box-shadow: 0 1px 4px rgba(0,0,0,0.3); 
+    }
     #map { height: 100%; width: 100%; }
   </style>
 </head>
 <body>
   <div id="controls">
     <label for="layerSelect">Layer: </label>
-    <select id="layerSelect">
-      <!-- static list of local defaults for now -->
-      <option value="treescape">treescape</option>
-      <option value="output_cog">output_cog</option>
-      <option value="gray_3857-cog">gray_3857-cog</option>
-    </select>
+    <select id="layerSelect"></select>
   </div>
 
   <div id="map"></div>
@@ -34,43 +38,48 @@
     integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
     crossorigin=""
   ></script>
+  
   <script>
-    // static list of layers; later you can fetch('/layers') instead
-    const availableLayers = ['layer1', 'layer2', 'layer3'];
     const layerSelect = document.getElementById('layerSelect');
 
     // initialize map
     const map = L.map('map').setView([0, 0], 2);
 
-    // create the initial tile layer
-    let currentLayerName = layerSelect.value;
-    let tileLayer = L.tileLayer(
-      `/tiles/${currentLayerName}/{z}/{x}/{y}`, {
+    let tileLayer;
+
+    async function initLayers() {
+      // fetch available layers
+      const res = await fetch('/layers');
+      const data = await res.json();  // Structure of JSON: [{ layer, style }, …]
+
+      // populate <select>
+      layerSelect.innerHTML = '';
+      data.forEach(({ layer, style }) => {
+      const opt = document.createElement('option');
+      opt.value = layer;
+      opt.textContent = `${layer} (${style})`; // Display as "layer (style)"
+      layerSelect.appendChild(opt);
+    });
+
+      // add first layer to map
+      const first = layerSelect.value;
+      tileLayer = L.tileLayer(`/tiles/${first}/{z}/{x}/{y}`, {
         maxZoom: 18,
         tileSize: 256,
-        attribution: '&copy; TileYolo'
-      }
-    ).addTo(map);
+      }).addTo(map);
+    }
 
-    // Swap layer on change
     layerSelect.addEventListener('change', () => {
       const newLayer = layerSelect.value;
-      if (newLayer === currentLayerName) return;
-
-      // remove old layer
       map.removeLayer(tileLayer);
-
-      // add new one
-      tileLayer = L.tileLayer(
-        `/tiles/${newLayer}/{z}/{x}/{y}`, {
-          maxZoom: 18,
-          tileSize: 256,
-          attribution: '&copy; TileYolo'
-        }
-      ).addTo(map);
-
-      currentLayerName = newLayer;
+      tileLayer = L.tileLayer(`/tiles/${newLayer}/{z}/{x}/{y}`, {
+        maxZoom: 18,
+        tileSize: 256,
+      }).addTo(map);
     });
+
+    // run on load
+    initLayers().catch(console.error);
   </script>
 </body>
 </html>
