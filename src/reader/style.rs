@@ -106,7 +106,7 @@ pub fn print_style_summary(
         .load_preset(comfy_table::presets::ASCII_BORDERS_ONLY_CONDENSED);
 
     let mut warnings = Vec::new();
-
+    let mut cog_error_count: usize = 0;
     for (style, (count, stops, min_v, max_v, num_cogs)) in style_info {
         let breaks_str = if is_builtin_palette(style) || stops.is_empty() {
             "auto".to_string()
@@ -174,6 +174,7 @@ pub fn print_style_summary(
                 style, num_cogs, count
             ));
             style_row[0] = Cell::new("⚠️");
+            cog_error_count += 1;
         }
 
         table.add_row(style_row);
@@ -186,6 +187,15 @@ pub fn print_style_summary(
         for warning in warnings {
             println!("{}", warning);
         }
-        println!();
     }
+
+    // Use tips section to provide additional information if a warning/error is
+    // present. For now we just have COGs... Let's provide a link to some
+    // instructions if any are detected
+    if cog_error_count > 0 {
+        println!("\nTips:");
+        println!("  How to generate COGs: https://cogeo.org/developers-guide.html");
+    }
+
+    println!();
 }

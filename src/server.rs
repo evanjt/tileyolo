@@ -41,7 +41,7 @@ impl TileServer {
             r#"
     🚀 TileYolo serving on {}
 
-    🗺️ QGIS XYZ-tiles path (layer: {})
+    🗺️ QGIS XYZ-tiles path (on randomly picked layer: {})
        → http://{}/tiles/{}/{{z}}/{{x}}/{{y}}
 
     🌍 Browse all loaded layers visually
