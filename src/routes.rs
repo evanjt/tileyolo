@@ -1,4 +1,4 @@
-use crate::reader::{Layer, TileReader};
+use crate::reader::TileReader;
 use axum::{
     Json,
     extract::{Path, State},

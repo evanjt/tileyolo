@@ -2,12 +2,12 @@ use crate::config::{Config, Source};
 use crate::reader::TileReader;
 use crate::reader::local::LocalTileReader;
 use crate::routes::{get_all_layers, tile_handler};
+use axum::routing::get_service;
 use axum::{Router, routing::get};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tower_http::services::{ServeDir, ServeFile};
-
+use tower_http::services::ServeFile;
 pub struct TileServer {
     config: Config,
     reader: Arc<dyn TileReader>,
@@ -33,13 +33,13 @@ impl TileServer {
             .route("/layers", get(get_all_layers))
             .with_state(reader.to_owned());
 
-        // Serve `./map`, falling back to index.html for SPA routes
-        // Resolve the `map` directory at compile time:
-        let static_dir: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("map");
-        let index_file = static_dir.join("index.html");
+        // Serve map endpoint with
+        let index_file: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("map")
+            .join("index.html");
 
-        // Serve everything under `map/`, but fall back to `index.html` at `/`
-        let static_files = ServeDir::new(&static_dir).fallback(ServeFile::new(index_file));
+        // Serve only the `index.html` file and nothing else
+        let static_files = Router::new().route("/", get_service(ServeFile::new(index_file)));
 
         // Combine tile routes and static files, with static as the fallback
         let app = Router::new()
