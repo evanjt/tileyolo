@@ -1,13 +1,10 @@
 use crate::config::{Config, Source};
 use crate::reader::TileReader;
 use crate::reader::local::LocalTileReader;
-use crate::routes::{get_all_layers, tile_handler};
-use axum::routing::get_service;
+use crate::routes::{get_all_layers, tile_handler, webmap_handler};
 use axum::{Router, routing::get};
 use std::net::SocketAddr;
-use std::path::PathBuf;
 use std::sync::Arc;
-use tower_http::services::ServeFile;
 
 pub struct TileServer {
     config: Config,
@@ -29,23 +26,11 @@ impl TileServer {
         let reader = self.reader;
 
         // Tile-serving router with state
-        let tiles = Router::new()
+        let app = Router::new()
             .route("/tiles/{layer}/{z}/{x}/{y}", get(tile_handler))
             .route("/layers", get(get_all_layers))
+            .route("/map", get(webmap_handler))
             .with_state(reader.to_owned());
-
-        // Serve map endpoint with
-        let index_file: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("map")
-            .join("index.html");
-
-        // Serve only the `index.html` file and nothing else
-        let static_files = Router::new().route("/", get_service(ServeFile::new(index_file)));
-
-        // Combine tile routes and static files, with static as the fallback
-        let app = Router::new()
-            .merge(tiles)
-            .nest_service("/map", static_files);
 
         let addr = SocketAddr::from(([0, 0, 0, 0], self.config.port));
         let listener = tokio::net::TcpListener::bind(addr).await.unwrap();

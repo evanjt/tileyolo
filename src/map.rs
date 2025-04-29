@@ -1,4 +1,4 @@
-const INDEX_HTML: &str = r#"<!DOCTYPE html>
+pub(super) const INDEX_HTML: &str = r#"<!DOCTYPE html>
   <html lang="en">
   <head>
     <meta charset="UTF-8" />
