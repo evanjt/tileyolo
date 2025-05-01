@@ -4,6 +4,7 @@ use gdal::spatial_ref::SpatialRef;
 use gdal::{Dataset, DriverManager, errors::GdalError};
 use gdal_sys::{GDALReprojectImage, GDALResampleAlg};
 use image::{ColorType, ImageEncoder, Rgba, RgbaImage, codecs::png::PngEncoder};
+use proj::Proj;
 use std::{io::Cursor, path::PathBuf};
 use tokio::task;
 
@@ -15,6 +16,26 @@ pub async fn process_cog(
 ) -> gdal::errors::Result<Vec<u8>> {
     task::spawn_blocking(move || {
         let (tile_size_x, tile_size_y) = tile_size;
+        let source_crs = format!(
+            "{}:{}",
+            layer_obj.geometry.crs_name, layer_obj.geometry.crs_code
+        );
+        let to_merc = Proj::new_known_crs(&source_crs, "EPSG:3857", None)
+            .map_err(|e| GdalError::BadArgument(e.to_string()))?;
+        let (orig_minx, orig_miny, orig_maxx, orig_maxy) = layer_obj.extent;
+
+        // Reproject both corners into 3857
+        let (x0, y0) = to_merc
+            .convert((orig_minx, orig_miny))
+            .map_err(|e| GdalError::BadArgument(format!("failed to reproj min corner: {}", e)))?;
+        let (x1, y1) = to_merc
+            .convert((orig_maxx, orig_maxy))
+            .map_err(|e| GdalError::BadArgument(format!("failed to reproj max corner: {}", e)))?;
+        let orig_minx_3857 = x0.min(x1);
+        let orig_maxx_3857 = x0.max(x1);
+        let orig_miny_3857 = y0.min(y1);
+        let orig_maxy_3857 = y0.max(y1);
+
         // Open source dataset, S3 is /vsis3/{bucket}/{key}, otherwise file.
         let src_ds = Dataset::open(&input_path)?;
 
@@ -56,8 +77,8 @@ pub async fn process_cog(
                 dst_ds.c_dataset(),
                 std::ptr::null(),
                 GDALResampleAlg::GRA_NearestNeighbour,
-                0.0,
-                0.0,
+                std::f64::NAN, // treat outside pixels as nodata
+                std::f64::NAN,
                 None,
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
@@ -71,15 +92,34 @@ pub async fn process_cog(
         let nodata_opt: Option<f32> = dst_band.no_data_value().map(|v| v as f32);
         let is_nodata = |v: f32| v.is_nan() || nodata_opt.map(|nd| v == nd).unwrap_or(false);
 
-        let buffer: Vec<f32> = dst_band
+        // Read the warped 256×256 band into a buffer
+        let mut buffer = dst_band
             .read_as::<f32>((0, 0), tile_size, tile_size, None)?
             .data()
             .to_vec();
+
+        // Any pixel whose geographic coordinate falls outside the original extent
+        // should be treated as nodata (NaN), not 0.0.
+
+        for y in 0..tile_size_y {
+            for x in 0..tile_size_x {
+                let gx = minx + (x as f64) * res_x;
+                let gy = maxy - (y as f64) * res_y;
+                if gx < orig_minx_3857
+                    || gx > orig_maxx_3857
+                    || gy < orig_miny_3857
+                    || gy > orig_maxy_3857
+                {
+                    buffer[y * tile_size_x + x] = f32::NAN;
+                }
+            }
+        }
 
         // Colourise into a 256×256 RGBA image
         let mut img = RgbaImage::new(tile_size_x as u32, tile_size_y as u32);
 
         if let Some(grad) = get_builtin_gradient(&layer_obj.style) {
+            // Use the gradient to colourise the image
             for (i, &raw) in buffer.iter().enumerate() {
                 let px = if is_nodata(raw) {
                     Rgba([0, 0, 0, 0])
@@ -95,6 +135,7 @@ pub async fn process_cog(
                 img.put_pixel(x, y, px);
             }
         } else if layer_obj.colour_stops.is_empty() {
+            // Fallback to grayscale
             for (i, &raw) in buffer.iter().enumerate() {
                 let px = if is_nodata(raw) {
                     Rgba([0, 0, 0, 0])
@@ -109,6 +150,7 @@ pub async fn process_cog(
                 img.put_pixel(x, y, px);
             }
         } else {
+            // Use the colour stops to colourise the image
             let cs = &layer_obj.colour_stops;
             let style_min = cs.first().unwrap().value;
             let style_max = cs.last().unwrap().value;

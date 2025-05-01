@@ -172,7 +172,7 @@ impl LocalTileReader {
         let maxy = origin_y;
         let miny = origin_y + pixel_height * height as f64;
         let extent = (minx, miny, maxx, maxy);
-        println!("Extent: {:?}", extent);
+
         let file_stem = path
             .file_stem()
             .and_then(|s| s.to_str())
@@ -251,38 +251,17 @@ impl TileReader for LocalTileReader {
         y: u32,
         _style: Option<&str>,
     ) -> anyhow::Result<TileResponse, String> {
-        let tile_size: (usize, usize) = (256, 256);
+        let tile_size = (256, 256);
+
         let layer_obj = self
             .layers
             .get(layer)
             .and_then(|styles| styles.first())
             .ok_or_else(|| format!("Layer not found: '{}'", layer))?;
 
-        // Compute web-mercator bounds for this tile
         let (minx, miny, maxx, maxy) = tile_bounds_to_3857(z, x, y);
 
-        // If requested tile is completely outside the GeoTIFF's native extent → transparent
-        let (lxmin, lymin, lxmax, lymax) = layer_obj.extent;
-        if maxx <= lxmin || minx >= lxmax || maxy <= lymin || miny >= lymax {
-            let mut buf = Vec::new();
-            // RGBA, zeroed → fully transparent
-            let empty = vec![0; tile_size.0 * tile_size.1 * 4];
-            let encoder = PngEncoder::new(&mut buf);
-            encoder
-                .write_image(
-                    &empty,
-                    tile_size.0 as u32,
-                    tile_size.1 as u32,
-                    ColorType::Rgba8.into(),
-                )
-                .map_err(|e| e.to_string())?;
-            return Ok(TileResponse {
-                content_type: "image/png".into(),
-                bytes: buf,
-            });
-        }
-
-        // Otherwise fall back to your existing COG pipeline
+        // always hand off to process_cog; it will do the extent-check itself
         let png_data = process_cog(
             layer_obj.path.clone(),
             (minx, miny, maxx, maxy),
