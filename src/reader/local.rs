@@ -9,6 +9,8 @@ use crate::reader::{
 };
 use async_trait::async_trait;
 use gdal::{Dataset, Metadata};
+use image::codecs::png::PngEncoder;
+use image::{ColorType, ImageEncoder};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::{
     collections::HashMap,
@@ -16,7 +18,6 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use walkdir::{DirEntry, WalkDir};
-
 pub struct LocalTileReader {
     layers: HashMap<String, Vec<Layer>>,
 }
@@ -158,6 +159,20 @@ impl LocalTileReader {
         // (unchanged)
         let path = entry.path().to_path_buf();
         let ds = Dataset::open(&path)?;
+
+        // Compute the native geotransform → extent
+        let gt = ds.geo_transform()?;
+        let origin_x = gt[0];
+        let pixel_width = gt[1];
+        let origin_y = gt[3];
+        let pixel_height = gt[5];
+        let (width, height) = ds.raster_size();
+        let minx = origin_x;
+        let maxx = origin_x + pixel_width * width as f64;
+        let maxy = origin_y;
+        let miny = origin_y + pixel_height * height as f64;
+        let extent = (minx, miny, maxx, maxy);
+        println!("Extent: {:?}", extent);
         let file_stem = path
             .file_stem()
             .and_then(|s| s.to_str())
@@ -207,6 +222,7 @@ impl LocalTileReader {
                 crs_name: auth_name,
                 crs_code: auth_code,
             },
+            extent,
             colour_stops,
             min_value,
             max_value,
@@ -235,20 +251,43 @@ impl TileReader for LocalTileReader {
         y: u32,
         _style: Option<&str>,
     ) -> anyhow::Result<TileResponse, String> {
+        let tile_size: (usize, usize) = (256, 256);
         let layer_obj = self
             .layers
             .get(layer)
             .and_then(|styles| styles.first())
             .ok_or_else(|| format!("Layer not found: '{}'", layer))?;
 
-        let tile_path = &layer_obj.path;
-        // reproject into MEM as f32 so we preserve negative values
+        // Compute web-mercator bounds for this tile
         let (minx, miny, maxx, maxy) = tile_bounds_to_3857(z, x, y);
 
+        // If requested tile is completely outside the GeoTIFF's native extent → transparent
+        let (lxmin, lymin, lxmax, lymax) = layer_obj.extent;
+        if maxx <= lxmin || minx >= lxmax || maxy <= lymin || miny >= lymax {
+            let mut buf = Vec::new();
+            // RGBA, zeroed → fully transparent
+            let empty = vec![0; tile_size.0 * tile_size.1 * 4];
+            let encoder = PngEncoder::new(&mut buf);
+            encoder
+                .write_image(
+                    &empty,
+                    tile_size.0 as u32,
+                    tile_size.1 as u32,
+                    ColorType::Rgba8.into(),
+                )
+                .map_err(|e| e.to_string())?;
+            return Ok(TileResponse {
+                content_type: "image/png".into(),
+                bytes: buf,
+            });
+        }
+
+        // Otherwise fall back to your existing COG pipeline
         let png_data = process_cog(
-            tile_path.clone(),
+            layer_obj.path.clone(),
             (minx, miny, maxx, maxy),
             layer_obj.clone(),
+            tile_size,
         )
         .await
         .map_err(|e| e.to_string())?;

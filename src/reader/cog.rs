@@ -11,24 +11,25 @@ pub async fn process_cog(
     input_path: PathBuf,
     bbox_3857: (f64, f64, f64, f64),
     layer_obj: Layer,
+    tile_size: (usize, usize),
 ) -> gdal::errors::Result<Vec<u8>> {
     task::spawn_blocking(move || {
+        let (tile_size_x, tile_size_y) = tile_size;
         // Open source dataset, S3 is /vsis3/{bucket}/{key}, otherwise file.
         let src_ds = Dataset::open(&input_path)?;
 
         // Prepare an in‐memory 256×256 target in Web mercator 3857
         let (minx, miny, maxx, maxy) = bbox_3857;
-        let tile_size: usize = 256;
-        let res_x = (maxx - minx) / (tile_size as f64);
-        let res_y = (maxy - miny) / (tile_size as f64);
+        let res_x = (maxx - minx) / (tile_size_x as f64);
+        let res_y = (maxy - miny) / (tile_size_y as f64);
 
         let mem_drv = DriverManager::get_driver_by_name("MEM")
             .map_err(|e| GdalError::BadArgument(e.to_string()))?;
         let mut dst_ds = mem_drv
             .create_with_band_type::<f32, _>(
                 "memory_dataset",
-                tile_size,
-                tile_size,
+                tile_size_x,
+                tile_size_y,
                 Config::default().default_raster_band,
             )
             .map_err(|e| GdalError::BadArgument(e.to_string()))?;
@@ -71,12 +72,12 @@ pub async fn process_cog(
         let is_nodata = |v: f32| v.is_nan() || nodata_opt.map(|nd| v == nd).unwrap_or(false);
 
         let buffer: Vec<f32> = dst_band
-            .read_as::<f32>((0, 0), (tile_size, tile_size), (tile_size, tile_size), None)?
+            .read_as::<f32>((0, 0), tile_size, tile_size, None)?
             .data()
             .to_vec();
 
         // Colourise into a 256×256 RGBA image
-        let mut img = RgbaImage::new(tile_size as u32, tile_size as u32);
+        let mut img = RgbaImage::new(tile_size_x as u32, tile_size_y as u32);
 
         if let Some(grad) = get_builtin_gradient(&layer_obj.style) {
             for (i, &raw) in buffer.iter().enumerate() {
@@ -89,8 +90,8 @@ pub async fn process_cog(
                     let [r, g, b, a] = grad.at(t).to_rgba8();
                     Rgba([r, g, b, a])
                 };
-                let x = (i % tile_size) as u32;
-                let y = (i / tile_size) as u32;
+                let x = (i % tile_size_x) as u32;
+                let y = (i / tile_size_y) as u32;
                 img.put_pixel(x, y, px);
             }
         } else if layer_obj.colour_stops.is_empty() {
@@ -103,8 +104,8 @@ pub async fn process_cog(
                     let lum = (norm.clamp(0.0, 1.0) * 255.0) as u8;
                     Rgba([lum, lum, lum, 255])
                 };
-                let x = (i % tile_size) as u32;
-                let y = (i / tile_size) as u32;
+                let x = (i % tile_size_x) as u32;
+                let y = (i / tile_size_y) as u32;
                 img.put_pixel(x, y, px);
             }
         } else {
@@ -134,8 +135,8 @@ pub async fn process_cog(
                     }
                     colour
                 };
-                let x = (i % tile_size) as u32;
-                let y = (i / tile_size) as u32;
+                let x = (i % tile_size_x) as u32;
+                let y = (i / tile_size_y) as u32;
                 img.put_pixel(x, y, px);
             }
         }
@@ -144,8 +145,8 @@ pub async fn process_cog(
         PngEncoder::new(Cursor::new(&mut png_data))
             .write_image(
                 img.as_raw(),
-                tile_size as u32,
-                tile_size as u32,
+                tile_size_x as u32,
+                tile_size_y as u32,
                 ColorType::Rgba8.into(),
             )
             .map_err(|e| GdalError::BadArgument(e.to_string()))?;
@@ -216,6 +217,7 @@ mod tests {
                 crs_name: "EPSG".to_string(),
                 crs_code: 3857,
             },
+            extent: (0.0, 0.0, 256.0, 256.0),
             colour_stops,
             min_value,
             max_value,
@@ -226,13 +228,20 @@ mod tests {
 
     /// Generates a temporary GeoTIFF in EPSG:3857 with reproducible random data,
     /// injecting ~10% NaN as no-data.
-    fn generate_random_cog(width: usize, height: usize) -> (TempDir, PathBuf) {
+    fn generate_random_cog(tile_size: (usize, usize)) -> (TempDir, PathBuf) {
         let tmp = TempDir::new().expect("failed to create temp dir");
         let file_path = tmp.path().join("test.tif");
 
+        let (tile_size_x, tile_size_y) = tile_size;
+
         let driver = DriverManager::get_driver_by_name("GTIFF").unwrap();
         let mut ds = driver
-            .create_with_band_type::<f32, _>(file_path.to_str().unwrap(), width, height, 1)
+            .create_with_band_type::<f32, _>(
+                file_path.to_str().unwrap(),
+                tile_size_x,
+                tile_size_y,
+                1,
+            )
             .unwrap();
 
         // Use Web Mercator so reprojection is identity
@@ -243,7 +252,7 @@ mod tests {
 
         // Fill with reproducible data and inject NaNs
         let mut rng = StdRng::seed_from_u64(42);
-        let data: Vec<f32> = (0..width * height)
+        let data: Vec<f32> = (0..tile_size_x * tile_size_y)
             .map(|_| {
                 if rng.random_bool(0.1) {
                     f32::NAN
@@ -257,8 +266,9 @@ mod tests {
             .rasterband(Config::default().default_raster_band)
             .unwrap();
 
-        let mut buffer = gdal::raster::Buffer::<f32>::new((width, height), data);
-        band.write((0, 0), (width, height), &mut buffer).unwrap();
+        let mut buffer = gdal::raster::Buffer::<f32>::new((tile_size_x, tile_size_y), data);
+        band.write((0, 0), (tile_size_x, tile_size_y), &mut buffer)
+            .unwrap();
         ds.flush_cache().unwrap();
 
         (tmp, file_path)
@@ -266,12 +276,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_process_cog_data_length() {
-        let (tmp, path) = generate_random_cog(256, 256);
+        let tile_size = (256, 256);
+        let (tmp, path) = generate_random_cog(tile_size);
         let mut layer = make_layer(1.0, 100.0);
         layer.path = path.clone();
         layer.size_bytes = fs::metadata(&path).unwrap().len();
 
-        let buffer = process_cog(path.clone(), (0.0, 256.0, 0.0, 256.0), layer)
+        let buffer = process_cog(path.clone(), (0.0, 256.0, 0.0, 256.0), layer, tile_size)
             .await
             .expect("process_cog should succeed");
 
@@ -284,12 +295,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_nodata_values_are_transparent() {
-        let (tmp, path) = generate_random_cog(256, 256);
+        let tile_size = (256, 256);
+        let (tmp, path) = generate_random_cog(tile_size);
         let mut layer = make_layer(0.0, 100.0);
         layer.path = path.clone();
         layer.size_bytes = fs::metadata(&path).unwrap().len();
 
-        let buffer = process_cog(path.clone(), (0.0, 256.0, 0.0, 256.0), layer)
+        let buffer = process_cog(path.clone(), (0.0, 256.0, 0.0, 256.0), layer, tile_size)
             .await
             .expect("process_cog should succeed");
 
@@ -307,7 +319,7 @@ mod tests {
 
     #[test]
     fn test_nodata_mask_generation() {
-        let (tmp, path) = generate_random_cog(128, 128);
+        let (tmp, path) = generate_random_cog((256, 256));
         let ds = Dataset::open(&path).unwrap();
         let band = ds.rasterband(1).unwrap();
 

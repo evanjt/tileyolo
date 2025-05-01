@@ -22,6 +22,16 @@ pub struct LayerMetadata {
     pub min_value: f32,
     pub max_value: f32,
     pub is_cog: bool,
+
+    // split your extent tuple into four CSV columns
+    #[serde(default)]
+    pub extent_minx: f64,
+    #[serde(default)]
+    pub extent_miny: f64,
+    #[serde(default)]
+    pub extent_maxx: f64,
+    #[serde(default)]
+    pub extent_maxy: f64,
 }
 
 impl LayerMetadata {
@@ -30,7 +40,7 @@ impl LayerMetadata {
         let last_modified = layer
             .last_modified
             .duration_since(UNIX_EPOCH)
-            .unwrap_or(Duration::from_secs(0))
+            .unwrap_or_default()
             .as_secs();
 
         LayerMetadata {
@@ -41,6 +51,10 @@ impl LayerMetadata {
             min_value: layer.min_value,
             max_value: layer.max_value,
             is_cog: layer.is_cog,
+            extent_minx: layer.extent.0,
+            extent_miny: layer.extent.1,
+            extent_maxx: layer.extent.2,
+            extent_maxy: layer.extent.3,
         }
     }
 
@@ -62,6 +76,14 @@ impl LayerMetadata {
 
         let last_modified = UNIX_EPOCH + Duration::from_secs(self.last_modified);
 
+        // rehydrate your extent tuple
+        let extent = (
+            self.extent_minx,
+            self.extent_miny,
+            self.extent_maxx,
+            self.extent_maxy,
+        );
+
         Layer {
             layer: self.layer.clone(),
             style: style_name.to_string(),
@@ -71,6 +93,7 @@ impl LayerMetadata {
                 crs_name: "EPSG".to_string(),
                 crs_code: self.crs_code,
             },
+            extent,
             colour_stops,
             min_value: self.min_value,
             max_value: self.max_value,
