@@ -1,16 +1,16 @@
 // src/reader/local.rs
 
 use crate::config::Config;
-use crate::reader::{
-    ColourStop, Layer, LayerGeometry, TileReader, TileResponse,
-    cog::process_cog,
-    metadata::{LayerMetadata, MetadataCache, key_for, load_cache, save_cache},
-    style::{is_builtin_palette, print_style_summary},
+use crate::{
+    reader::{
+        ColourStop, Layer, LayerGeometry, TileReader, TileResponse,
+        cog::process_cog,
+        metadata::{LayerMetadata, MetadataCache, key_for, load_cache, save_cache},
+    },
+    utils::{status::print_style_summary, style::is_builtin_palette},
 };
 use async_trait::async_trait;
 use gdal::{Dataset, Metadata};
-use image::codecs::png::PngEncoder;
-use image::{ColorType, ImageEncoder};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::{
     collections::HashMap,
@@ -188,7 +188,7 @@ impl LocalTileReader {
             Vec::new()
         } else {
             let style_path = entry.path().parent().unwrap().join("style.txt");
-            super::style::parse_style_file(&style_path).unwrap_or_default()
+            crate::utils::style::parse_style_file(&style_path).unwrap_or_default()
         };
         let layout_opt = ds.metadata_item("LAYOUT", "IMAGE_STRUCTURE");
         let is_cog = layout_opt

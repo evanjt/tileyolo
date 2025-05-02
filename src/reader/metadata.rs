@@ -1,8 +1,8 @@
 // src/reader/metadata.rs
 
-use crate::reader::{
-    ColourStop, Layer, LayerGeometry,
-    style::{is_builtin_palette, parse_style_file},
+use crate::{
+    reader::{ColourStop, Layer, LayerGeometry},
+    utils::style::{is_builtin_palette, parse_style_file},
 };
 use csv::{ReaderBuilder, WriterBuilder};
 use serde::{Deserialize, Serialize};

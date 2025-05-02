@@ -1,5 +1,5 @@
 use super::Layer;
-use crate::{Config, reader::style::get_builtin_gradient};
+use crate::{Config, utils::style::get_builtin_gradient};
 use gdal::spatial_ref::SpatialRef;
 use gdal::{Dataset, DriverManager, errors::GdalError};
 use gdal_sys::{GDALReprojectImage, GDALResampleAlg};
@@ -77,8 +77,8 @@ pub async fn process_cog(
                 dst_ds.c_dataset(),
                 std::ptr::null(),
                 GDALResampleAlg::GRA_NearestNeighbour,
-                std::f64::NAN, // treat outside pixels as nodata
-                std::f64::NAN,
+                f64::NAN, // treat outside pixels as nodata
+                f64::NAN,
                 None,
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),

@@ -6,7 +6,6 @@ pub mod cog;
 pub mod local;
 pub mod metadata;
 pub mod s3;
-pub mod style;
 
 pub struct TileResponse {
     pub bytes: Vec<u8>,
