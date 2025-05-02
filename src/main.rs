@@ -13,6 +13,13 @@ struct Cli {
         help = "Path to the data folder"
     )]
     data_folder: String,
+    #[arg(
+        long,
+        default_value_t = Config::default_port(),
+        value_name = "PORT",
+        help = "Port to run the server on"
+    )]
+    port: u16,
 }
 
 #[tokio::main]
@@ -24,6 +31,7 @@ async fn main() -> anyhow::Result<()> {
         source: Some(Source::Local(Config::parse_path_to_absolute(
             &PathBuf::from(cli.data_folder),
         ))),
+        port: cli.port,
         ..Config::default() // Then fill with the rest of the default config
     };
 

@@ -1,85 +1,27 @@
-use super::ColourStop;
-use colorgrad::{Gradient, preset};
+use crate::{
+    reader::{ColourStop, Layer},
+    utils::style::{get_builtin_gradient, is_builtin_palette},
+};
 use comfy_table::{Attribute, Cell, CellAlignment, Table};
 use std::collections::HashMap;
-use std::fs;
-use std::path::Path;
 
-pub fn parse_style_file<P: AsRef<Path>>(path: P) -> Result<Vec<ColourStop>, String> {
-    let content =
-        fs::read_to_string(path).map_err(|e| format!("Failed to read style.txt: {}", e))?;
-    let mut stops = Vec::new();
-
-    for line in content.lines() {
-        if line.starts_with('#') || line.starts_with("INTERPOLATION") || line.trim().is_empty() {
-            continue;
-        }
-        let parts: Vec<&str> = line.split(',').collect();
-        if parts.len() < 5 {
-            continue;
-        }
-
-        let value = parts[0]
-            .parse()
-            .map_err(|e| format!("Invalid value: {}", e))?;
-        let red = parts[1]
-            .parse()
-            .map_err(|e| format!("Invalid red: {}", e))?;
-        let green = parts[2]
-            .parse()
-            .map_err(|e| format!("Invalid green: {}", e))?;
-        let blue = parts[3]
-            .parse()
-            .map_err(|e| format!("Invalid blue: {}", e))?;
-        let alpha = parts[4]
-            .parse()
-            .map_err(|e| format!("Invalid alpha: {}", e))?;
-
-        stops.push(ColourStop {
-            value,
-            red,
-            green,
-            blue,
-            alpha,
-        });
+pub fn print_layer_summary(layers: &Vec<Layer>) {
+    let mut style_info: HashMap<String, (usize, Vec<ColourStop>, f32, f32, usize)> = HashMap::new();
+    for layer in layers {
+        let entry = style_info.entry(layer.style.clone()).or_insert((
+            0,
+            layer.colour_stops.clone(),
+            layer.min_value,
+            layer.max_value,
+            0,
+        ));
+        entry.0 += 1;
+        entry.1 = layer.colour_stops.clone();
+        entry.2 = entry.2.min(layer.min_value);
+        entry.3 = entry.3.max(layer.max_value);
+        entry.4 += layer.is_cog as usize;
     }
 
-    Ok(stops)
-}
-
-pub fn is_builtin_palette(name: &str) -> bool {
-    matches!(
-        name,
-        "viridis"
-            | "magma"
-            | "plasma"
-            | "inferno"
-            | "turbo"
-            | "cubehelix_default"
-            | "rainbow"
-            | "spectral"
-            | "sinebow"
-    )
-}
-
-pub fn get_builtin_gradient(name: &str) -> Option<Box<dyn Gradient>> {
-    Some(match name {
-        "viridis" => Box::new(preset::viridis()),
-        "magma" => Box::new(preset::magma()),
-        "plasma" => Box::new(preset::plasma()),
-        "inferno" => Box::new(preset::inferno()),
-        "turbo" => Box::new(preset::turbo()),
-        "cubehelix_default" => Box::new(preset::cubehelix_default()),
-        "rainbow" => Box::new(preset::rainbow()),
-        "spectral" => Box::new(preset::spectral()),
-        "sinebow" => Box::new(preset::sinebow()),
-        _ => return None,
-    })
-}
-
-pub fn print_style_summary(
-    style_info: &HashMap<String, (usize, Vec<ColourStop>, f32, f32, usize)>,
-) {
     let mut table = Table::new();
     table
         .set_header(vec![
@@ -106,9 +48,9 @@ pub fn print_style_summary(
         .load_preset(comfy_table::presets::ASCII_BORDERS_ONLY_CONDENSED);
 
     let mut warnings = Vec::new();
-
+    let mut cog_error_count: usize = 0;
     for (style, (count, stops, min_v, max_v, num_cogs)) in style_info {
-        let breaks_str = if is_builtin_palette(style) {
+        let breaks_str = if is_builtin_palette(&style) || stops.is_empty() {
             "auto".to_string()
         } else {
             stops
@@ -117,8 +59,7 @@ pub fn print_style_summary(
                 .collect::<Vec<_>>()
                 .join(", ")
         };
-
-        let bar = if let Some(grad) = get_builtin_gradient(style) {
+        let bar = if let Some(grad) = get_builtin_gradient(&style) {
             let mut s = String::new();
             let n = 10;
             for i in 0..n {
@@ -127,9 +68,18 @@ pub fn print_style_summary(
                 s.push_str(&format!("\x1b[38;2;{};{};{}m█\x1b[0m", r, g, b));
             }
             s
+        } else if stops.is_empty() {
+            // fallback to grayscale gradient
+            let mut s = String::new();
+            let n = 10;
+            for i in 0..n {
+                let v = (255.0 * i as f32 / (n - 1) as f32).round() as u8;
+                s.push_str(&format!("\x1b[38;2;{0};{0};{0}m█\x1b[0m", v));
+            }
+            s
         } else {
             let mut s = String::new();
-            for cs in stops {
+            for cs in &stops {
                 s.push_str(&format!(
                     "\x1b[38;2;{};{};{}m█\x1b[0m",
                     cs.red, cs.green, cs.blue
@@ -138,10 +88,11 @@ pub fn print_style_summary(
             s
         };
 
+        let style_str = style.clone();
         let mut style_row = vec![
             Cell::new("✅").set_alignment(CellAlignment::Center), // Default success overwritten to warning if needed
             Cell::new(style),
-            Cell::new(*count).set_alignment(CellAlignment::Center),
+            Cell::new(count).set_alignment(CellAlignment::Center),
             Cell::new(breaks_str).set_alignment(CellAlignment::Center),
             Cell::new(min_v).set_alignment(CellAlignment::Center),
             Cell::new(max_v).set_alignment(CellAlignment::Center),
@@ -151,10 +102,10 @@ pub fn print_style_summary(
         if !stops.is_empty() {
             let style_min = stops.first().unwrap().value;
             let style_max = stops.last().unwrap().value;
-            if *min_v < style_min || *max_v > style_max {
+            if min_v < style_min || max_v > style_max {
                 warnings.push(format!(
                     "  ⚠️{}: Colour stops [{:.2}…{:.2}] do NOT cover data range [{:.2}…{:.2}]",
-                    style, style_min, style_max, min_v, max_v
+                    style_str, style_min, style_max, min_v, max_v
                 ));
                 style_row[0] = Cell::new("⚠️");
             }
@@ -163,9 +114,10 @@ pub fn print_style_summary(
         if num_cogs < count {
             warnings.push(format!(
                 "  ⚠️{}: {} of {} layers are COGs, performance will be degraded on large datasets",
-                style, num_cogs, count
+                style_str, num_cogs, count
             ));
             style_row[0] = Cell::new("⚠️");
+            cog_error_count += 1;
         }
 
         table.add_row(style_row);
@@ -178,6 +130,15 @@ pub fn print_style_summary(
         for warning in warnings {
             println!("{}", warning);
         }
-        println!();
     }
+
+    // Use tips section to provide additional information if a warning/error is
+    // present. For now we just have COGs... Let's provide a link to some
+    // instructions if any are detected
+    if cog_error_count > 0 {
+        println!("\nTips:");
+        println!("  How to generate COGs: https://cogeo.org/developers-guide.html");
+    }
+
+    println!();
 }

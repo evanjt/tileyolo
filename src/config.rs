@@ -11,7 +11,8 @@ pub struct Config {
     pub source: Option<Source>,
     pub data_folder: String,
     pub default_style: Option<String>,
-    pub tile_size: u32,
+    pub tile_size_x: u32,
+    pub tile_size_y: u32,
     pub port: u16,
     pub default_raster_band: usize,
 }
@@ -23,7 +24,8 @@ impl Default for Config {
             // Default may be S3 in the future...
             data_folder: "data".to_string(),
             default_style: Some("default".to_string()),
-            tile_size: 256,
+            tile_size_x: 256,
+            tile_size_y: 256,
             port: 8000,
             default_raster_band: 1,
         }
@@ -51,5 +53,10 @@ impl Config {
         Self::parse_path_to_absolute(&path)
             .to_string_lossy()
             .into_owned()
+    }
+
+    pub fn default_port() -> u16 {
+        // Return the default port
+        Self::default().port
     }
 }
