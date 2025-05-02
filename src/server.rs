@@ -28,7 +28,7 @@ impl TileServer {
             .route("/tiles/{layer}/{z}/{x}/{y}", get(tile_handler))
             .route("/layers", get(get_all_layers))
             .route("/map", get(webmap_handler))
-            .with_state(self.reader.to_owned());
+            .with_state(self.reader.clone());
 
         let addr = SocketAddr::from(([0, 0, 0, 0], self.config.port));
         let listener = tokio::net::TcpListener::bind(addr).await.unwrap();

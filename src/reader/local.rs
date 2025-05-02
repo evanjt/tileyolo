@@ -106,10 +106,13 @@ impl LocalTileReader {
             }
 
             // Otherwise read fresh via GDAL
-            let layer = Self::get_tiff_metadata(entry).unwrap_or_else(|e| {
-                pb.finish_with_message(format!("❌ Failed to read file: {}", e));
-                panic!("Failed to read file: {}", e);
-            });
+            let layer = match Self::get_tiff_metadata(entry) {
+                Ok(layer) => layer,
+                Err(e) => {
+                    pb.println(format!("❌ Failed to read file: {}", e));
+                    continue; // Skip this file and continue processing others
+                }
+            };
             layers.push(layer.clone());
             new_cache.insert(rel_key, LayerMetadata::from_layer(&layer));
             pb.inc(1);
