@@ -3,11 +3,11 @@
 use crate::config::Config;
 use crate::{
     reader::{
-        ColourStop, Layer, LayerGeometry, TileReader, TileResponse,
+        Layer, LayerGeometry, TileReader, TileResponse,
         cog::process_cog,
         metadata::{LayerMetadata, MetadataCache, key_for, load_cache, save_cache},
     },
-    utils::{status::print_style_summary, style::is_builtin_palette},
+    utils::{status::print_loading_summary, style::is_builtin_palette},
 };
 use async_trait::async_trait;
 use gdal::{Dataset, Metadata};
@@ -132,26 +132,26 @@ impl LocalTileReader {
         println!("📦 Total layers: {}", layers.len());
 
         // === build style_info ===
-        let mut style_info: HashMap<String, (usize, Vec<ColourStop>, f32, f32, usize)> =
-            HashMap::new();
-        for layer_list in layers.values() {
-            for layer in layer_list {
-                let entry = style_info.entry(layer.style.clone()).or_insert((
-                    0,
-                    layer.colour_stops.clone(),
-                    layer.min_value,
-                    layer.max_value,
-                    0,
-                ));
-                entry.0 += 1;
-                entry.1 = layer.colour_stops.clone();
-                entry.2 = entry.2.min(layer.min_value);
-                entry.3 = entry.3.max(layer.max_value);
-                entry.4 += layer.is_cog as usize;
-            }
-        }
-        print_style_summary(&style_info);
-
+        // let mut style_info: HashMap<String, (usize, Vec<ColourStop>, f32, f32, usize)> =
+        //     HashMap::new();
+        // for layer_list in layers.values() {
+        //     for layer in layer_list {
+        //         let entry = style_info.entry(layer.style.clone()).or_insert((
+        //             0,
+        //             layer.colour_stops.clone(),
+        //             layer.min_value,
+        //             layer.max_value,
+        //             0,
+        //         ));
+        //         entry.0 += 1;
+        //         entry.1 = layer.colour_stops.clone();
+        //         entry.2 = entry.2.min(layer.min_value);
+        //         entry.3 = entry.3.max(layer.max_value);
+        //         entry.4 += layer.is_cog as usize;
+        //     }
+        // }
+        // print_loading_summary(&style_info);
+        print_loading_summary(&layers);
         Self { layers }
     }
 
