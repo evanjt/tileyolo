@@ -5,23 +5,32 @@ use crate::{
 use comfy_table::{Attribute, Cell, CellAlignment, Table};
 use std::collections::HashMap;
 
-pub fn print_loading_summary(layers: &HashMap<String, Vec<Layer>>) {
+pub fn print_layer_summary(layers: &Vec<Layer>) {
+    // Get first layer name and its values
+    // let first_record = layers
+    //     .values()
+    //     .next()
+    //     .and_then(|layer_list| layer_list.first())
+    //     .expect("No layers found");
+    // println!("Layer: {:?}", first_record);
+
+    // Print all keys of hashmap
+    // println!("Keys: {:?}", layers.keys().collect::<Vec<_>>());
+
     let mut style_info: HashMap<String, (usize, Vec<ColourStop>, f32, f32, usize)> = HashMap::new();
-    for layer_list in layers.values() {
-        for layer in layer_list {
-            let entry = style_info.entry(layer.style.clone()).or_insert((
-                0,
-                layer.colour_stops.clone(),
-                layer.min_value,
-                layer.max_value,
-                0,
-            ));
-            entry.0 += 1;
-            entry.1 = layer.colour_stops.clone();
-            entry.2 = entry.2.min(layer.min_value);
-            entry.3 = entry.3.max(layer.max_value);
-            entry.4 += layer.is_cog as usize;
-        }
+    for layer in layers {
+        let entry = style_info.entry(layer.style.clone()).or_insert((
+            0,
+            layer.colour_stops.clone(),
+            layer.min_value,
+            layer.max_value,
+            0,
+        ));
+        entry.0 += 1;
+        entry.1 = layer.colour_stops.clone();
+        entry.2 = entry.2.min(layer.min_value);
+        entry.3 = entry.3.max(layer.max_value);
+        entry.4 += layer.is_cog as usize;
     }
 
     let mut table = Table::new();

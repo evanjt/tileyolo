@@ -1,5 +1,4 @@
 use async_trait::async_trait;
-use std::collections::HashMap;
 use std::path::PathBuf;
 
 pub mod cog;
@@ -44,7 +43,7 @@ pub struct LayerGeometry {
 
 #[async_trait]
 pub trait TileReader: Send + Sync {
-    async fn list_layers(&self) -> HashMap<String, Vec<String>>;
+    async fn list_layers(&self) -> Vec<Layer>;
     async fn get_tile(
         &self,
         layer: &str,

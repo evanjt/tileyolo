@@ -35,7 +35,7 @@ impl TileServer {
 
         // Choose a random layer for the example URL
         let layers = self.reader.list_layers().await;
-        let random_layer = layers.keys().next().unwrap();
+        let random_layer = layers.first().unwrap().layer.clone();
 
         println!(
             r#"

@@ -1,5 +1,5 @@
-use crate::map::INDEX_HTML;
 use crate::reader::TileReader;
+use crate::{map::INDEX_HTML, reader::Layer};
 use axum::{
     Json,
     extract::{Path, State},
@@ -34,14 +34,14 @@ pub(super) async fn tile_handler(
 }
 
 pub(super) async fn get_all_layers(State(reader): State<Arc<dyn TileReader>>) -> impl IntoResponse {
-    let layers: std::collections::HashMap<String, Vec<String>> = reader.list_layers().await;
+    let layers: Vec<Layer> = reader.list_layers().await;
     let mut all_layers: Vec<LayerResponse> = Vec::new();
 
-    for (layer, styles) in layers {
-        for style in styles {
+    for layer in layers {
+        {
             all_layers.push(LayerResponse {
-                layer: layer.clone(),
-                style: style.clone(),
+                layer: layer.layer.clone(),
+                style: layer.style.clone(),
             });
         }
     }

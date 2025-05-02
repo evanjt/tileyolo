@@ -7,7 +7,7 @@ use crate::{
         cog::process_cog,
         metadata::{LayerMetadata, MetadataCache, key_for, load_cache, save_cache},
     },
-    utils::{status::print_loading_summary, style::is_builtin_palette},
+    utils::{status::print_layer_summary, style::is_builtin_palette},
 };
 use async_trait::async_trait;
 use gdal::{Dataset, Metadata};
@@ -59,7 +59,7 @@ impl LocalTileReader {
                 .progress_chars("█▇▆▅▄▃▂▁  "),
         );
         let mut loaded_bytes = 0u64;
-        let mut layers: HashMap<String, Vec<Layer>> = HashMap::new();
+        let mut layers: Vec<Layer> = Vec::new();
 
         // Process each file found in the directory
         for entry in entries {
@@ -98,10 +98,7 @@ impl LocalTileReader {
             if let Some(meta) = old_cache.get(&rel_key) {
                 if meta.size_bytes == file_bytes && meta.last_modified == last_modified_secs {
                     let layer = meta.to_layer(&path);
-                    layers
-                        .entry(layer.layer.clone())
-                        .or_default()
-                        .push(layer.clone());
+                    layers.push(layer.clone());
                     new_cache.insert(rel_key.clone(), meta.clone());
                     pb.inc(1);
                     continue;
@@ -113,10 +110,7 @@ impl LocalTileReader {
                 pb.finish_with_message(format!("❌ Failed to read file: {}", e));
                 panic!("Failed to read file: {}", e);
             });
-            layers
-                .entry(layer.layer.clone())
-                .or_default()
-                .push(layer.clone());
+            layers.push(layer.clone());
             new_cache.insert(rel_key, LayerMetadata::from_layer(&layer));
             pb.inc(1);
         }
@@ -131,28 +125,17 @@ impl LocalTileReader {
         );
         println!("📦 Total layers: {}", layers.len());
 
-        // === build style_info ===
-        // let mut style_info: HashMap<String, (usize, Vec<ColourStop>, f32, f32, usize)> =
-        //     HashMap::new();
-        // for layer_list in layers.values() {
-        //     for layer in layer_list {
-        //         let entry = style_info.entry(layer.style.clone()).or_insert((
-        //             0,
-        //             layer.colour_stops.clone(),
-        //             layer.min_value,
-        //             layer.max_value,
-        //             0,
-        //         ));
-        //         entry.0 += 1;
-        //         entry.1 = layer.colour_stops.clone();
-        //         entry.2 = entry.2.min(layer.min_value);
-        //         entry.3 = entry.3.max(layer.max_value);
-        //         entry.4 += layer.is_cog as usize;
-        //     }
-        // }
-        // print_loading_summary(&style_info);
-        print_loading_summary(&layers);
-        Self { layers }
+        print_layer_summary(&layers);
+
+        // Build a HashMap of layers keyed by layer name to allow quick access when called for
+        // tiles
+        let mut layers_map: HashMap<String, Vec<Layer>> = HashMap::new();
+        for layer in layers {
+            let layer_name = layer.layer.clone();
+            layers_map.entry(layer_name).or_default().push(layer);
+        }
+
+        Self { layers: layers_map }
     }
 
     fn get_tiff_metadata(entry: DirEntry) -> anyhow::Result<Layer> {
@@ -234,13 +217,14 @@ impl LocalTileReader {
 
 #[async_trait]
 impl TileReader for LocalTileReader {
-    async fn list_layers(&self) -> HashMap<String, Vec<String>> {
-        let mut result = HashMap::new();
-        for (layer, styles) in &self.layers {
-            let style_names = styles.iter().map(|s| s.style.clone()).collect();
-            result.insert(layer.clone(), style_names);
-        }
-        result
+    async fn list_layers(&self) -> Vec<Layer> {
+        let mut all_layers: Vec<Layer> = self
+            .layers
+            .values()
+            .flat_map(|layers| layers.clone())
+            .collect();
+        all_layers.sort_by(|a, b| a.layer.cmp(&b.layer));
+        all_layers
     }
 
     async fn get_tile(
