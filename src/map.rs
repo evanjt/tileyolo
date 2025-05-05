@@ -129,14 +129,16 @@ pub(super) const INDEX_HTML: &str = r#"<!DOCTYPE html>
       }
 
       function zoomToLayerExtent(geometry) {
-        if (geometry && geometry["4326"]) {
-          const extent = geometry["4326"].extent; // [minX, minY, maxX, maxY]
-          const bounds = [
-            [extent[1], extent[0]], // [minY, minX]
-            [extent[3], extent[2]]  // [maxY, maxX]
-          ];
-          map.fitBounds(bounds);
-        }
+        if (!geometry) return;
+
+        const crsGeom = geometry[4326];
+        const { extent } = crsGeom;  // { minx, miny, maxx, maxy }
+        const bounds = [
+          [extent.miny, extent.minx],
+          [extent.maxy, extent.maxx]
+        ];
+
+        map.fitBounds(bounds);
       }
 
       osmToggle.addEventListener('change', () => {
