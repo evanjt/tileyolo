@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use proj::Proj;
 use serde::Serialize;
-use std::path::PathBuf;
+use std::{collections::HashMap, path::PathBuf};
 
 pub mod cog;
 pub mod local;
@@ -28,7 +28,8 @@ pub struct Layer {
     pub style: String,
     pub path: PathBuf,
     pub size_bytes: u64,
-    pub geometry: LayerGeometry,
+    pub source_geometry: LayerGeometry,
+    pub cached_geometry: HashMap<i32, LayerGeometry>, // Used to cache the projected extents for supplying endpoint
     pub colour_stops: Vec<ColourStop>,
     pub min_value: f32,
     pub max_value: f32,

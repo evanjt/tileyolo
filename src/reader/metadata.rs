@@ -47,14 +47,14 @@ impl LayerMetadata {
             layer: layer.layer.clone(),
             size_bytes: layer.size_bytes,
             last_modified,
-            crs_code: layer.geometry.crs_code,
+            crs_code: layer.source_geometry.crs_code,
             min_value: layer.min_value,
             max_value: layer.max_value,
             is_cog: layer.is_cog,
-            extent_minx: layer.geometry.extent.0,
-            extent_miny: layer.geometry.extent.1,
-            extent_maxx: layer.geometry.extent.2,
-            extent_maxy: layer.geometry.extent.3,
+            extent_minx: layer.source_geometry.extent.0,
+            extent_miny: layer.source_geometry.extent.1,
+            extent_maxx: layer.source_geometry.extent.2,
+            extent_maxy: layer.source_geometry.extent.3,
         }
     }
 
@@ -87,10 +87,11 @@ impl LayerMetadata {
             style: style_name.to_string(),
             path: path.to_path_buf(),
             size_bytes: self.size_bytes,
-            geometry: LayerGeometry {
+            source_geometry: LayerGeometry {
                 crs_code: self.crs_code,
                 extent,
             },
+            cached_geometry: HashMap::new(),
             colour_stops,
             min_value: self.min_value,
             max_value: self.max_value,

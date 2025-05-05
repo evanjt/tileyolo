@@ -215,10 +215,11 @@ impl LocalTileReader {
             style: style_name.to_string(),
             path: path.clone(),
             size_bytes: file_bytes,
-            geometry: LayerGeometry {
+            source_geometry: LayerGeometry {
                 crs_code: auth_code,
                 extent,
             },
+            cached_geometry: HashMap::new(),
             colour_stops,
             min_value,
             max_value,

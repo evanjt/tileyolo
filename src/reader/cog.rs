@@ -16,10 +16,10 @@ pub async fn process_cog(
 ) -> gdal::errors::Result<Vec<u8>> {
     task::spawn_blocking(move || {
         let (tile_size_x, tile_size_y) = tile_size;
-        let source_crs = format!("{}:{}", "EPSG", layer_obj.geometry.crs_code);
+        let source_crs = format!("{}:{}", "EPSG", layer_obj.source_geometry.crs_code);
         let to_merc = Proj::new_known_crs(&source_crs, "EPSG:3857", None)
             .map_err(|e| GdalError::BadArgument(e.to_string()))?;
-        let (orig_minx, orig_miny, orig_maxx, orig_maxy) = layer_obj.geometry.extent;
+        let (orig_minx, orig_miny, orig_maxx, orig_maxy) = layer_obj.source_geometry.extent;
 
         // Reproject both corners into 3857
         let (x0, y0) = to_merc
@@ -205,6 +205,7 @@ mod tests {
     use image::{ColorType, ImageDecoder, codecs::png::PngDecoder};
     use rand::rngs::StdRng;
     use rand::{Rng, SeedableRng};
+    use std::collections::HashMap;
     use std::{fs, io::Cursor, path::PathBuf};
     use tempfile::TempDir;
 
@@ -252,10 +253,11 @@ mod tests {
             style: "default".to_string(),
             path,
             size_bytes: 0,
-            geometry: LayerGeometry {
+            source_geometry: LayerGeometry {
                 crs_code: 3857,
                 extent: (0.0, 0.0, 256.0, 256.0),
             },
+            cached_geometry: HashMap::new(),
             colour_stops,
             min_value,
             max_value,

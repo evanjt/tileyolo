@@ -47,16 +47,16 @@ pub(super) async fn get_all_layers(State(reader): State<Arc<dyn TileReader>>) ->
         geometry.insert(
             4326,
             layer
-                .geometry
+                .source_geometry
                 .project(4326)
-                .unwrap_or_else(|_| layer.geometry.clone()),
+                .unwrap_or_else(|_| layer.source_geometry.clone()),
         );
         geometry.insert(
             3857,
             layer
-                .geometry
+                .source_geometry
                 .project(3857)
-                .unwrap_or_else(|_| layer.geometry.clone()),
+                .unwrap_or_else(|_| layer.source_geometry.clone()),
         );
         {
             all_layers.push(LayerResponse {
