@@ -7,13 +7,14 @@ use axum::{
     response::{Html, IntoResponse},
 };
 use serde::Serialize;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 #[derive(Serialize)]
 struct LayerResponse {
     layer: String,
     style: String,
-    geometry: Vec<LayerGeometry>,
+    geometry: HashMap<i32, LayerGeometry>,
 }
 
 pub(super) async fn webmap_handler() -> impl IntoResponse {
@@ -39,11 +40,29 @@ pub(super) async fn get_all_layers(State(reader): State<Arc<dyn TileReader>>) ->
     let mut all_layers: Vec<LayerResponse> = Vec::new();
 
     for layer in layers {
+        let mut geometry = HashMap::new();
+        // Make sure we have the native geometry plus the 3857 geometry
+        // for the webmap, and 4326 for interoperability
+
+        geometry.insert(
+            4326,
+            layer
+                .geometry
+                .project(4326)
+                .unwrap_or_else(|_| layer.geometry.clone()),
+        );
+        geometry.insert(
+            3857,
+            layer
+                .geometry
+                .project(3857)
+                .unwrap_or_else(|_| layer.geometry.clone()),
+        );
         {
             all_layers.push(LayerResponse {
                 layer: layer.layer.clone(),
                 style: layer.style.clone(),
-                geometry: vec![layer.geometry.clone()],
+                geometry,
             });
         }
     }

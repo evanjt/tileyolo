@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use proj::Proj;
 use serde::Serialize;
 use std::path::PathBuf;
 
@@ -41,6 +42,32 @@ pub struct LayerGeometry {
     pub extent: (f64, f64, f64, f64), // (minx, miny, maxx, maxy)
 }
 
+impl LayerGeometry {
+    pub fn project(&self, target_crs: i32) -> anyhow::Result<Self> {
+        if self.crs_code == target_crs {
+            return Ok(self.clone());
+        }
+
+        let proj = Proj::new_known_crs(
+            format!("EPSG:{}", self.crs_code).as_str(),
+            format!("EPSG:{}", target_crs).as_str(),
+            None,
+        )
+        .unwrap();
+
+        let (minx, miny) = proj
+            .convert((self.extent.0, self.extent.1))
+            .map_err(anyhow::Error::from)?;
+        let (maxx, maxy) = proj
+            .convert((self.extent.2, self.extent.3))
+            .map_err(anyhow::Error::from)?;
+
+        Ok(LayerGeometry {
+            crs_code: target_crs,
+            extent: (minx, miny, maxx, maxy),
+        })
+    }
+}
 #[async_trait]
 pub trait TileReader: Send + Sync {
     async fn list_layers(&self) -> Vec<Layer>;
