@@ -36,5 +36,6 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let server = TileServer::new(config)?;
+
     server.start().await
 }

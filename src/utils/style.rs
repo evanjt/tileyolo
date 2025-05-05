@@ -46,18 +46,7 @@ pub fn parse_style_file<P: AsRef<Path>>(path: P) -> Result<Vec<ColourStop>, Stri
 }
 
 pub fn is_builtin_palette(name: &str) -> bool {
-    matches!(
-        name,
-        "viridis"
-            | "magma"
-            | "plasma"
-            | "inferno"
-            | "turbo"
-            | "cubehelix_default"
-            | "rainbow"
-            | "spectral"
-            | "sinebow"
-    )
+    get_builtin_gradient(name).is_some()
 }
 
 pub fn get_builtin_gradient(name: &str) -> Option<Box<dyn Gradient>> {

@@ -23,14 +23,14 @@ pub struct LocalTileReader {
 }
 
 impl LocalTileReader {
-    pub fn new(root: PathBuf) -> Self {
+    pub fn new(root: &PathBuf) -> Self {
         // Load cache (CSV, one line per record)
         let cache_path = root.join(".metadata_cache.csv");
         let old_cache: MetadataCache = load_cache(&cache_path);
         let mut new_cache: MetadataCache = MetadataCache::new();
 
         // Gather all .tif/.tiff files under root
-        let entries: Vec<DirEntry> = WalkDir::new(&root)
+        let entries: Vec<DirEntry> = WalkDir::new(root)
             .min_depth(2)
             .into_iter()
             .filter_map(Result::ok)
@@ -38,10 +38,22 @@ impl LocalTileReader {
                 e.path()
                     .extension()
                     .and_then(|s| s.to_str())
-                    .map(|ext| ext.eq_ignore_ascii_case("tif") || ext.eq_ignore_ascii_case("tiff"))
+                    .map(|ext| {
+                        ext.eq_ignore_ascii_case("tif")
+                            || ext.eq_ignore_ascii_case("tiff")
+                            || ext.eq_ignore_ascii_case("geotiff")
+                            || ext.eq_ignore_ascii_case("geotif")
+                    })
                     .unwrap_or(false)
             })
             .collect();
+
+        // If no files found, return empty
+        if entries.is_empty() {
+            return Self {
+                layers: HashMap::new(),
+            };
+        }
 
         let total_files = entries.len() as u64;
         let total_bytes: u64 = entries
@@ -83,7 +95,7 @@ impl LocalTileReader {
             pb.set_message(message);
 
             // Build cache key (filename) + mtime
-            let rel_key = key_for(&path, &root);
+            let rel_key = key_for(&path, root);
             let last_modified = entry
                 .metadata()
                 .ok()

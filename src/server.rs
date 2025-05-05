@@ -14,11 +14,12 @@ pub struct TileServer {
 impl TileServer {
     pub fn new(config: Config) -> anyhow::Result<Self> {
         let reader: Arc<dyn TileReader> = match &config.source {
-            Some(Source::Local(path)) => Arc::new(LocalTileReader::new(path.clone())),
+            Some(Source::Local(path)) => Arc::new(LocalTileReader::new(path)),
             Some(Source::S3 { .. }) => unimplemented!("S3 backend is not yet implemented"),
             None => anyhow::bail!("No source provided in the configuration"),
         };
 
+        // if reader
         Ok(Self { config, reader })
     }
 
@@ -35,6 +36,17 @@ impl TileServer {
 
         // Choose a random layer for the example URL
         let layers = self.reader.list_layers().await;
+
+        if layers.is_empty() {
+            println!(
+                "⚠️ No layers found in the data folder.\n\n\
+                Define the root data path with the --data-folder flag and be \
+                sure to nest the TIFFs in folders according to style. See \
+                README for details."
+            );
+            return Ok(());
+        }
+
         let random_layer = layers.first().unwrap().layer.clone();
 
         println!(

@@ -23,7 +23,7 @@ pub struct LayerMetadata {
     pub max_value: f32,
     pub is_cog: bool,
 
-    // split your extent tuple into four CSV columns
+    // split extent tuple into four CSV columns
     #[serde(default)]
     pub extent_minx: f64,
     #[serde(default)]
@@ -75,8 +75,6 @@ impl LayerMetadata {
         };
 
         let last_modified = UNIX_EPOCH + Duration::from_secs(self.last_modified);
-
-        // rehydrate your extent tuple
         let extent = (
             self.extent_minx,
             self.extent_miny,
