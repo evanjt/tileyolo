@@ -14,16 +14,35 @@ pub(super) const INDEX_HTML: &str = r#"<!DOCTYPE html>
       html, body { height: 100%; margin: 0; padding: 0; }
       #controls {
         position: absolute;
-        top: 10px;
+        top: 12px;
         left: 50px;
         z-index: 1000;
         background: white;
         padding: 6px;
         border-radius: 4px;
         box-shadow: 0 1px 4px rgba(0,0,0,0.3);
+        height: 80px;
+        line-height: 26px;
       }
       #map { height: 100%; width: 100%; }
-    </style>
+    .leaflet-control-zoom .leaflet-control-zoom-to-extent {
+      display: block;
+      background-color: #fff;
+      border-bottom: 1px solid #ccc;
+      width: 26px;
+      height: 26px;
+      line-height: 26px;
+      text-align: center;
+      text-decoration: none;
+      color: #333;
+      font: bold 18px 'Lucida Console', Monaco, monospace;
+      text-indent: 1px;
+    }
+
+    .leaflet-control-zoom .leaflet-control-zoom-to-extent:hover {
+      background-color: #f4f4f4;
+    }
+  </style>
   </head>
   <body>
     <div id="controls">
@@ -58,6 +77,7 @@ pub(super) const INDEX_HTML: &str = r#"<!DOCTYPE html>
       let tileLayer;
       let osmLayer;
       let layersData = [];
+      let currentLayerGeometry = null;
 
       // Add OSM basemap layer
       osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -101,7 +121,14 @@ pub(super) const INDEX_HTML: &str = r#"<!DOCTYPE html>
 
         tileLayer.setZIndex(1); // Ensure the layer is above the OSM basemap
 
+        // Store the current layer's geometry
+        currentLayerGeometry = geometry;
+
         // Zoom to extent
+        zoomToLayerExtent(geometry);
+      }
+
+      function zoomToLayerExtent(geometry) {
         if (geometry && geometry["4326"]) {
           const extent = geometry["4326"].extent; // [minX, minY, maxX, maxY]
           const bounds = [
@@ -132,9 +159,25 @@ pub(super) const INDEX_HTML: &str = r#"<!DOCTYPE html>
         }
       });
 
-      // run on load
-      initLayers().catch(console.error);
-    </script>
+      // Add extent button to the zoom control
+      const zoomControl = map.zoomControl;
+      const zoomToExtentButton = L.DomUtil.create(
+      'a',
+      'leaflet-control-zoom-to-extent',
+      zoomControl._container
+    );
+    zoomToExtentButton.innerHTML = '⤢';
+    zoomToExtentButton.href = '#';
+    zoomToExtentButton.title = 'Zoom to Extent';
+
+    L.DomEvent.on(zoomToExtentButton, 'click', e => {
+      L.DomEvent.preventDefault(e);
+      if (currentLayerGeometry) {
+        zoomToLayerExtent(currentLayerGeometry);
+      }
+    });
+    initLayers().catch(console.error);
+  </script>
   </body>
   </html>
 "#;
