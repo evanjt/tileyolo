@@ -12,9 +12,9 @@ pub struct TileServer {
 }
 
 impl TileServer {
-    pub fn new(config: Config) -> anyhow::Result<Self> {
+    pub async fn new(config: Config) -> anyhow::Result<Self> {
         let reader: Arc<dyn TileReader> = match &config.source {
-            Some(Source::Local(path)) => Arc::new(LocalTileReader::new(path)),
+            Some(Source::Local(path)) => Arc::new(LocalTileReader::new(path).await),
             Some(Source::S3 { .. }) => unimplemented!("S3 backend is not yet implemented"),
             None => anyhow::bail!("No source provided in the configuration"),
         };

@@ -21,7 +21,7 @@ pub struct LocalTileReader {
 }
 
 impl LocalTileReader {
-    pub fn new(root: &PathBuf) -> Self {
+    pub async fn new(root: &PathBuf) -> Self {
         // Load cache (CSV, one line per record)
         let cache_path = root.join(".metadata_cache.csv");
         let old_cache: MetadataCache = load_cache(&cache_path);
@@ -107,7 +107,7 @@ impl LocalTileReader {
             // If unchanged (size + mtime), reuse metadata; style re‐derived from path
             if let Some(meta) = old_cache.get(&rel_key) {
                 if meta.size_bytes == file_bytes && meta.last_modified == last_modified_secs {
-                    let layer = meta.to_layer(&path);
+                    let layer = meta.to_layer(&path).await;
                     layers.push(layer.clone());
                     new_cache.insert(rel_key.clone(), meta.clone());
                     pb.inc(1);
@@ -116,7 +116,7 @@ impl LocalTileReader {
             }
 
             // Otherwise read fresh via GDAL
-            let layer = match Self::get_tiff_metadata(entry) {
+            let layer = match Self::get_tiff_metadata(entry).await {
                 Ok(layer) => layer,
                 Err(e) => {
                     pb.println(format!("❌ Failed to read file: {}", e));
@@ -151,7 +151,7 @@ impl LocalTileReader {
         Self { layers: layers_map }
     }
 
-    fn get_tiff_metadata(entry: DirEntry) -> anyhow::Result<Layer> {
+    async fn get_tiff_metadata(entry: DirEntry) -> anyhow::Result<Layer> {
         // (unchanged)
         let path = entry.path().to_path_buf();
         let ds = Dataset::open(&path)?;
@@ -210,16 +210,20 @@ impl LocalTileReader {
             .and_then(|m| m.modified().ok())
             .unwrap_or(SystemTime::now());
 
+        // Create the Layer object
+        let source_geometry = LayerGeometry {
+            crs_code: auth_code,
+            extent,
+        };
+        let cached_geometry = source_geometry.generate_cached_geometry_sync()?;
+
         Ok(Layer {
             layer: file_stem.clone(),
             style: style_name.to_string(),
             path: path.clone(),
             size_bytes: file_bytes,
-            source_geometry: LayerGeometry {
-                crs_code: auth_code,
-                extent,
-            },
-            cached_geometry: HashMap::new(),
+            source_geometry,
+            cached_geometry,
             colour_stops,
             min_value,
             max_value,

@@ -35,7 +35,7 @@ async fn main() -> anyhow::Result<()> {
         ..Config::default() // Then fill with the rest of the default config
     };
 
-    let server = TileServer::new(config)?;
+    let server = TileServer::new(config).await?;
 
     server.start().await
 }

@@ -211,11 +211,10 @@ mod tests {
     use image::{ColorType, ImageDecoder, codecs::png::PngDecoder};
     use rand::rngs::StdRng;
     use rand::{Rng, SeedableRng};
-    use std::collections::HashMap;
     use std::{fs, io::Cursor, path::PathBuf};
     use tempfile::TempDir;
 
-    fn make_layer(min_value: f32, max_value: f32) -> Layer {
+    async fn make_layer(min_value: f32, max_value: f32) -> Layer {
         let path = PathBuf::new(); // will be set per-test
         let colour_stops = vec![
             ColourStop {
@@ -254,21 +253,24 @@ mod tests {
                 alpha: 255,
             },
         ];
+
+        let source_geometry = LayerGeometry {
+            crs_code: 3857,
+            extent: GeometryExtent {
+                minx: 0.0,
+                miny: 0.0,
+                maxx: 256.0,
+                maxy: 256.0,
+            },
+        };
+        let cached_geometry = source_geometry.generate_cached_geometry_sync().unwrap();
         Layer {
             layer: "test".to_string(),
             style: "default".to_string(),
             path,
             size_bytes: 0,
-            source_geometry: LayerGeometry {
-                crs_code: 3857,
-                extent: GeometryExtent {
-                    minx: 0.0,
-                    miny: 0.0,
-                    maxx: 256.0,
-                    maxy: 256.0,
-                },
-            },
-            cached_geometry: HashMap::new(),
+            source_geometry,
+            cached_geometry,
             colour_stops,
             min_value,
             max_value,
@@ -329,7 +331,7 @@ mod tests {
     async fn test_process_cog_data_length() {
         let tile_size = (256, 256);
         let (tmp, path) = generate_random_cog(tile_size);
-        let mut layer = make_layer(1.0, 100.0);
+        let mut layer = make_layer(1.0, 100.0).await;
         layer.path = path.clone();
         layer.size_bytes = fs::metadata(&path).unwrap().len();
 
@@ -348,7 +350,7 @@ mod tests {
     async fn test_nodata_values_are_transparent() {
         let tile_size = (256, 256);
         let (tmp, path) = generate_random_cog(tile_size);
-        let mut layer = make_layer(0.0, 100.0);
+        let mut layer = make_layer(0.0, 100.0).await;
         layer.path = path.clone();
         layer.size_bytes = fs::metadata(&path).unwrap().len();
 

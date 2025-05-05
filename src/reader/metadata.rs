@@ -55,7 +55,7 @@ impl LayerMetadata {
     }
 
     /// Reconstruct a Layer (including style/colour_stops) from metadata + actual file path
-    pub fn to_layer(&self, path: &Path) -> Layer {
+    pub async fn to_layer(&self, path: &Path) -> Layer {
         // Style is determined at runtime from the immediate parent folder
         let style_name = path
             .parent()
@@ -72,21 +72,25 @@ impl LayerMetadata {
 
         let last_modified = UNIX_EPOCH + Duration::from_secs(self.last_modified);
 
+        let source_geometry = LayerGeometry {
+            crs_code: self.crs_code,
+            extent: GeometryExtent {
+                minx: self.extent_minx,
+                miny: self.extent_miny,
+                maxx: self.extent_maxx,
+                maxy: self.extent_maxy,
+            },
+        };
+        let cached_geometry = source_geometry
+            .generate_cached_geometry_sync()
+            .unwrap_or_default();
         Layer {
             layer: self.layer.clone(),
             style: style_name.to_string(),
             path: path.to_path_buf(),
             size_bytes: self.size_bytes,
-            source_geometry: LayerGeometry {
-                crs_code: self.crs_code,
-                extent: GeometryExtent {
-                    minx: self.extent_minx,
-                    miny: self.extent_miny,
-                    maxx: self.extent_maxx,
-                    maxy: self.extent_maxy,
-                },
-            },
-            cached_geometry: HashMap::new(),
+            source_geometry,
+            cached_geometry,
             colour_stops,
             min_value: self.min_value,
             max_value: self.max_value,

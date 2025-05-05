@@ -40,29 +40,11 @@ pub(super) async fn get_all_layers(State(reader): State<Arc<dyn TileReader>>) ->
     let mut all_layers: Vec<LayerResponse> = Vec::new();
 
     for layer in layers {
-        let mut geometry = HashMap::new();
-        // Make sure we have the native geometry plus the 3857 geometry
-        // for the webmap, and 4326 for interoperability
-
-        geometry.insert(
-            4326,
-            layer
-                .source_geometry
-                .project(4326)
-                .unwrap_or_else(|_| layer.source_geometry.clone()),
-        );
-        geometry.insert(
-            3857,
-            layer
-                .source_geometry
-                .project(3857)
-                .unwrap_or_else(|_| layer.source_geometry.clone()),
-        );
         {
             all_layers.push(LayerResponse {
                 layer: layer.layer.clone(),
                 style: layer.style.clone(),
-                geometry,
+                geometry: layer.cached_geometry, // Assumes this has already been populated at load
             });
         }
     }
