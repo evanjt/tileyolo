@@ -19,14 +19,19 @@ pub async fn process_cog(
         let source_crs = format!("{}:{}", "EPSG", layer_obj.source_geometry.crs_code);
         let to_merc = Proj::new_known_crs(&source_crs, "EPSG:3857", None)
             .map_err(|e| GdalError::BadArgument(e.to_string()))?;
-        let (orig_minx, orig_miny, orig_maxx, orig_maxy) = layer_obj.source_geometry.extent;
 
         // Reproject both corners into 3857
         let (x0, y0) = to_merc
-            .convert((orig_minx, orig_miny))
+            .convert((
+                layer_obj.source_geometry.extent.minx,
+                layer_obj.source_geometry.extent.miny,
+            ))
             .map_err(|e| GdalError::BadArgument(format!("failed to reproj min corner: {}", e)))?;
         let (x1, y1) = to_merc
-            .convert((orig_maxx, orig_maxy))
+            .convert((
+                layer_obj.source_geometry.extent.maxx,
+                layer_obj.source_geometry.extent.maxy,
+            ))
             .map_err(|e| GdalError::BadArgument(format!("failed to reproj max corner: {}", e)))?;
         let orig_minx_3857 = x0.min(x1);
         let orig_maxx_3857 = x0.max(x1);
@@ -199,6 +204,7 @@ pub async fn process_cog(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::reader::GeometryExtent;
     use crate::reader::{ColourStop, Layer, LayerGeometry, cog::process_cog};
     use gdal::spatial_ref::SpatialRef;
     use gdal::{Dataset, DriverManager};
@@ -255,7 +261,12 @@ mod tests {
             size_bytes: 0,
             source_geometry: LayerGeometry {
                 crs_code: 3857,
-                extent: (0.0, 0.0, 256.0, 256.0),
+                extent: GeometryExtent {
+                    minx: 0.0,
+                    miny: 0.0,
+                    maxx: 256.0,
+                    maxy: 256.0,
+                },
             },
             cached_geometry: HashMap::new(),
             colour_stops,

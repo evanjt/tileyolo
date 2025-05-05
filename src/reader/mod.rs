@@ -40,9 +40,27 @@ pub struct Layer {
 #[derive(Debug, Clone, Serialize)]
 pub struct LayerGeometry {
     pub crs_code: i32,
-    pub extent: (f64, f64, f64, f64), // (minx, miny, maxx, maxy)
+    pub extent: GeometryExtent,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct GeometryExtent {
+    minx: f64,
+    miny: f64,
+    maxx: f64,
+    maxy: f64,
+}
+
+impl From<(f64, f64, f64, f64)> for GeometryExtent {
+    fn from(extent: (f64, f64, f64, f64)) -> Self {
+        GeometryExtent {
+            minx: extent.0, // minx
+            miny: extent.1, // miny
+            maxx: extent.2, // maxx
+            maxy: extent.3, // maxy
+        }
+    }
+}
 impl LayerGeometry {
     pub fn project(&self, target_crs: i32) -> anyhow::Result<Self> {
         if self.crs_code == target_crs {
@@ -57,15 +75,15 @@ impl LayerGeometry {
         .unwrap();
 
         let (minx, miny) = proj
-            .convert((self.extent.0, self.extent.1))
+            .convert((self.extent.minx, self.extent.miny))
             .map_err(anyhow::Error::from)?;
         let (maxx, maxy) = proj
-            .convert((self.extent.2, self.extent.3))
+            .convert((self.extent.maxx, self.extent.maxy))
             .map_err(anyhow::Error::from)?;
 
         Ok(LayerGeometry {
             crs_code: target_crs,
-            extent: (minx, miny, maxx, maxy),
+            extent: (minx, miny, maxx, maxy).into(),
         })
     }
 }

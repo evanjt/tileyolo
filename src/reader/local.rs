@@ -1,9 +1,7 @@
-// src/reader/local.rs
-
 use crate::config::Config;
 use crate::{
     reader::{
-        Layer, LayerGeometry, TileReader, TileResponse,
+        GeometryExtent, Layer, LayerGeometry, TileReader, TileResponse,
         cog::process_cog,
         metadata::{LayerMetadata, MetadataCache, key_for, load_cache, save_cache},
     },
@@ -165,11 +163,13 @@ impl LocalTileReader {
         let origin_y = gt[3];
         let pixel_height = gt[5];
         let (width, height) = ds.raster_size();
-        let minx = origin_x;
-        let maxx = origin_x + pixel_width * width as f64;
-        let maxy = origin_y;
-        let miny = origin_y + pixel_height * height as f64;
-        let extent = (minx, miny, maxx, maxy);
+        let extent: GeometryExtent = (
+            origin_x,
+            (origin_x + pixel_width * width as f64),
+            origin_y,
+            (origin_y + pixel_height * height as f64),
+        )
+            .into();
 
         let file_stem = path
             .file_stem()

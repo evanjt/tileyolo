@@ -1,7 +1,7 @@
 // src/reader/metadata.rs
 
 use crate::{
-    reader::{ColourStop, Layer, LayerGeometry},
+    reader::{ColourStop, GeometryExtent, Layer, LayerGeometry},
     utils::style::{is_builtin_palette, parse_style_file},
 };
 use csv::{ReaderBuilder, WriterBuilder};
@@ -24,13 +24,9 @@ pub struct LayerMetadata {
     pub is_cog: bool,
 
     // split extent tuple into four CSV columns
-    #[serde(default)]
     pub extent_minx: f64,
-    #[serde(default)]
     pub extent_miny: f64,
-    #[serde(default)]
     pub extent_maxx: f64,
-    #[serde(default)]
     pub extent_maxy: f64,
 }
 
@@ -51,10 +47,10 @@ impl LayerMetadata {
             min_value: layer.min_value,
             max_value: layer.max_value,
             is_cog: layer.is_cog,
-            extent_minx: layer.source_geometry.extent.0,
-            extent_miny: layer.source_geometry.extent.1,
-            extent_maxx: layer.source_geometry.extent.2,
-            extent_maxy: layer.source_geometry.extent.3,
+            extent_minx: layer.source_geometry.extent.minx,
+            extent_miny: layer.source_geometry.extent.miny,
+            extent_maxx: layer.source_geometry.extent.maxx,
+            extent_maxy: layer.source_geometry.extent.maxy,
         }
     }
 
@@ -75,12 +71,6 @@ impl LayerMetadata {
         };
 
         let last_modified = UNIX_EPOCH + Duration::from_secs(self.last_modified);
-        let extent = (
-            self.extent_minx,
-            self.extent_miny,
-            self.extent_maxx,
-            self.extent_maxy,
-        );
 
         Layer {
             layer: self.layer.clone(),
@@ -89,7 +79,12 @@ impl LayerMetadata {
             size_bytes: self.size_bytes,
             source_geometry: LayerGeometry {
                 crs_code: self.crs_code,
-                extent,
+                extent: GeometryExtent {
+                    minx: self.extent_minx,
+                    miny: self.extent_miny,
+                    maxx: self.extent_maxx,
+                    maxy: self.extent_maxy,
+                },
             },
             cached_geometry: HashMap::new(),
             colour_stops,
