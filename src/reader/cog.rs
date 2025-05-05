@@ -16,10 +16,7 @@ pub async fn process_cog(
 ) -> gdal::errors::Result<Vec<u8>> {
     task::spawn_blocking(move || {
         let (tile_size_x, tile_size_y) = tile_size;
-        let source_crs = format!(
-            "{}:{}",
-            layer_obj.geometry.crs_name, layer_obj.geometry.crs_code
-        );
+        let source_crs = format!("{}:{}", "EPSG", layer_obj.geometry.crs_code);
         let to_merc = Proj::new_known_crs(&source_crs, "EPSG:3857", None)
             .map_err(|e| GdalError::BadArgument(e.to_string()))?;
         let (orig_minx, orig_miny, orig_maxx, orig_maxy) = layer_obj.geometry.extent;
@@ -256,7 +253,6 @@ mod tests {
             path,
             size_bytes: 0,
             geometry: LayerGeometry {
-                crs_name: "EPSG".to_string(),
                 crs_code: 3857,
                 extent: (0.0, 0.0, 256.0, 256.0),
             },

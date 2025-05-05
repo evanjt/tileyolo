@@ -1,4 +1,4 @@
-use crate::reader::TileReader;
+use crate::reader::{LayerGeometry, TileReader};
 use crate::{map::INDEX_HTML, reader::Layer};
 use axum::{
     Json,
@@ -13,6 +13,7 @@ use std::sync::Arc;
 struct LayerResponse {
     layer: String,
     style: String,
+    geometry: Vec<LayerGeometry>,
 }
 
 pub(super) async fn webmap_handler() -> impl IntoResponse {
@@ -42,6 +43,7 @@ pub(super) async fn get_all_layers(State(reader): State<Arc<dyn TileReader>>) ->
             all_layers.push(LayerResponse {
                 layer: layer.layer.clone(),
                 style: layer.style.clone(),
+                geometry: vec![layer.geometry.clone()],
             });
         }
     }

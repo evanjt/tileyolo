@@ -196,7 +196,6 @@ impl LocalTileReader {
         let sref = ds
             .spatial_ref()
             .unwrap_or_else(|e| panic!("❌ CRS missing for '{}': {}", file_stem, e));
-        let auth_name = sref.auth_name().unwrap_or("UNKNOWN".to_string());
         let auth_code = sref.auth_code().unwrap_or(0);
         let band = ds
             .rasterband(Config::default().default_raster_band)
@@ -217,7 +216,6 @@ impl LocalTileReader {
             path: path.clone(),
             size_bytes: file_bytes,
             geometry: LayerGeometry {
-                crs_name: auth_name,
                 crs_code: auth_code,
                 extent,
             },

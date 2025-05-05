@@ -88,7 +88,6 @@ impl LayerMetadata {
             path: path.to_path_buf(),
             size_bytes: self.size_bytes,
             geometry: LayerGeometry {
-                crs_name: "EPSG".to_string(),
                 crs_code: self.crs_code,
                 extent,
             },

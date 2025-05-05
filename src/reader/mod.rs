@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use serde::Serialize;
 use std::path::PathBuf;
 
 pub mod cog;
@@ -34,9 +35,8 @@ pub struct Layer {
     pub last_modified: std::time::SystemTime,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct LayerGeometry {
-    pub crs_name: String,
     pub crs_code: i32,
     pub extent: (f64, f64, f64, f64), // (minx, miny, maxx, maxy)
 }
