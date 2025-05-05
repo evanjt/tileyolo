@@ -219,8 +219,8 @@ impl LocalTileReader {
             geometry: LayerGeometry {
                 crs_name: auth_name,
                 crs_code: auth_code,
+                extent,
             },
-            extent,
             colour_stops,
             min_value,
             max_value,

@@ -27,7 +27,6 @@ pub struct Layer {
     pub path: PathBuf,
     pub size_bytes: u64,
     pub geometry: LayerGeometry,
-    pub extent: (f64, f64, f64, f64), // (minx, miny, maxx, maxy)
     pub colour_stops: Vec<ColourStop>,
     pub min_value: f32,
     pub max_value: f32,
@@ -39,6 +38,7 @@ pub struct Layer {
 pub struct LayerGeometry {
     pub crs_name: String,
     pub crs_code: i32,
+    pub extent: (f64, f64, f64, f64), // (minx, miny, maxx, maxy)
 }
 
 #[async_trait]

@@ -22,7 +22,7 @@ pub async fn process_cog(
         );
         let to_merc = Proj::new_known_crs(&source_crs, "EPSG:3857", None)
             .map_err(|e| GdalError::BadArgument(e.to_string()))?;
-        let (orig_minx, orig_miny, orig_maxx, orig_maxy) = layer_obj.extent;
+        let (orig_minx, orig_miny, orig_maxx, orig_maxy) = layer_obj.geometry.extent;
 
         // Reproject both corners into 3857
         let (x0, y0) = to_merc
@@ -258,8 +258,8 @@ mod tests {
             geometry: LayerGeometry {
                 crs_name: "EPSG".to_string(),
                 crs_code: 3857,
+                extent: (0.0, 0.0, 256.0, 256.0),
             },
-            extent: (0.0, 0.0, 256.0, 256.0),
             colour_stops,
             min_value,
             max_value,

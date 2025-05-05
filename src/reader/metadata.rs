@@ -51,10 +51,10 @@ impl LayerMetadata {
             min_value: layer.min_value,
             max_value: layer.max_value,
             is_cog: layer.is_cog,
-            extent_minx: layer.extent.0,
-            extent_miny: layer.extent.1,
-            extent_maxx: layer.extent.2,
-            extent_maxy: layer.extent.3,
+            extent_minx: layer.geometry.extent.0,
+            extent_miny: layer.geometry.extent.1,
+            extent_maxx: layer.geometry.extent.2,
+            extent_maxy: layer.geometry.extent.3,
         }
     }
 
@@ -90,8 +90,8 @@ impl LayerMetadata {
             geometry: LayerGeometry {
                 crs_name: "EPSG".to_string(),
                 crs_code: self.crs_code,
+                extent,
             },
-            extent,
             colour_stops,
             min_value: self.min_value,
             max_value: self.max_value,
