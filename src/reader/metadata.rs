@@ -1,7 +1,11 @@
 // src/reader/metadata.rs
 
 use crate::{
-    reader::{ColourStop, GeometryExtent, Layer, LayerGeometry},
+    models::{
+        geometry::GeometryExtent,
+        layer::{Layer, LayerGeometry},
+        style::ColourStop,
+    },
     utils::style::{is_builtin_palette, parse_style_file},
 };
 use csv::{ReaderBuilder, WriterBuilder};

@@ -1,5 +1,5 @@
 use crate::{
-    reader::{ColourStop, Layer},
+    models::{layer::Layer, style::ColourStop},
     utils::style::{get_builtin_gradient, is_builtin_palette},
 };
 use comfy_table::{Attribute, Cell, CellAlignment, Table};

@@ -1,5 +1,6 @@
-use crate::reader::{LayerGeometry, TileReader};
-use crate::{map::INDEX_HTML, reader::Layer};
+use crate::endpoints::map::INDEX_HTML;
+use crate::models::layer::{Layer, LayerGeometry};
+use crate::traits::TileReader;
 use axum::{
     Json,
     extract::{Path, State},
@@ -17,11 +18,11 @@ struct LayerResponse {
     geometry: HashMap<i32, LayerGeometry>,
 }
 
-pub(super) async fn webmap_handler() -> impl IntoResponse {
+pub async fn webmap_handler() -> impl IntoResponse {
     Html(INDEX_HTML)
 }
 
-pub(super) async fn tile_handler(
+pub async fn tile_handler(
     Path((layer, z, x, y)): Path<(String, u8, u32, u32)>,
     State(reader): State<Arc<dyn TileReader>>,
 ) -> impl IntoResponse {
@@ -35,7 +36,7 @@ pub(super) async fn tile_handler(
     }
 }
 
-pub(super) async fn get_all_layers(State(reader): State<Arc<dyn TileReader>>) -> impl IntoResponse {
+pub async fn get_all_layers(State(reader): State<Arc<dyn TileReader>>) -> impl IntoResponse {
     let layers: Vec<Layer> = reader.list_layers().await;
     let mut all_layers: Vec<LayerResponse> = Vec::new();
 

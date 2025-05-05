@@ -1,10 +1,15 @@
 use crate::config::Config;
 use crate::{
+    models::{
+        geometry::GeometryExtent,
+        layer::{Layer, LayerGeometry},
+        responses::TileResponse,
+    },
     reader::{
-        GeometryExtent, Layer, LayerGeometry, TileReader, TileResponse,
         cog::process_cog,
         metadata::{LayerMetadata, MetadataCache, key_for, load_cache, save_cache},
     },
+    traits::TileReader,
     utils::{status::print_layer_summary, style::is_builtin_palette},
 };
 use async_trait::async_trait;
@@ -261,17 +266,12 @@ impl TileReader for LocalTileReader {
             .and_then(|styles| styles.first())
             .ok_or_else(|| format!("Layer not found: '{}'", layer))?;
 
-        let (minx, miny, maxx, maxy) = tile_bounds_to_3857(z, x, y);
+        let extent: GeometryExtent = tile_bounds_to_3857(z, x, y);
 
         // always hand off to process_cog; it will do the extent-check itself
-        let png_data = process_cog(
-            layer_obj.path.clone(),
-            (minx, miny, maxx, maxy),
-            layer_obj.clone(),
-            tile_size,
-        )
-        .await
-        .map_err(|e| e.to_string())?;
+        let png_data = process_cog(layer_obj.path.clone(), extent, layer_obj.clone(), tile_size)
+            .await
+            .map_err(|e| e.to_string())?;
 
         Ok(TileResponse {
             content_type: "image/png".into(),
@@ -280,8 +280,7 @@ impl TileReader for LocalTileReader {
     }
 }
 
-fn tile_bounds_to_3857(z: u8, x: u32, y: u32) -> (f64, f64, f64, f64) {
-    // unchanged…
+fn tile_bounds_to_3857(z: u8, x: u32, y: u32) -> GeometryExtent {
     let tile_size = 256.0;
     let initial_resolution = 2.0 * 20037508.342789244 / tile_size;
     let res = initial_resolution / (2f64.powi(z as i32));
@@ -289,5 +288,11 @@ fn tile_bounds_to_3857(z: u8, x: u32, y: u32) -> (f64, f64, f64, f64) {
     let maxx = (x as f64 + 1.0) * tile_size * res - 20037508.342789244;
     let maxy = 20037508.342789244 - y as f64 * tile_size * res;
     let miny = 20037508.342789244 - (y as f64 + 1.0) * tile_size * res;
-    (minx, miny, maxx, maxy)
+
+    GeometryExtent {
+        minx,
+        miny,
+        maxx,
+        maxy,
+    }
 }

@@ -1,7 +1,7 @@
 use crate::config::{Config, Source};
-use crate::reader::TileReader;
+use crate::endpoints::handlers::{get_all_layers, tile_handler, webmap_handler};
 use crate::reader::local::LocalTileReader;
-use crate::routes::{get_all_layers, tile_handler, webmap_handler};
+use crate::traits::TileReader;
 use axum::{Router, routing::get};
 use std::net::SocketAddr;
 use std::sync::Arc;

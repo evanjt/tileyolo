@@ -1,4 +1,4 @@
-use crate::reader::ColourStop;
+use crate::models::style::ColourStop;
 use colorgrad::{Gradient, preset};
 use std::fs;
 use std::path::Path;

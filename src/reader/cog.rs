@@ -1,4 +1,5 @@
-use super::Layer;
+use crate::models::geometry::GeometryExtent;
+use crate::models::layer::Layer;
 use crate::{Config, utils::style::get_builtin_gradient};
 use gdal::spatial_ref::SpatialRef;
 use gdal::{Dataset, DriverManager, errors::GdalError};
@@ -10,7 +11,7 @@ use tokio::task;
 
 pub async fn process_cog(
     input_path: PathBuf,
-    bbox_3857: (f64, f64, f64, f64),
+    extent_3857: GeometryExtent,
     layer_obj: Layer,
     tile_size: (usize, usize),
 ) -> gdal::errors::Result<Vec<u8>> {
@@ -42,9 +43,9 @@ pub async fn process_cog(
         let src_ds = Dataset::open(&input_path)?;
 
         // Prepare an in‐memory 256×256 target in Web mercator 3857
-        let (minx, miny, maxx, maxy) = bbox_3857;
-        let res_x = (maxx - minx) / (tile_size_x as f64);
-        let res_y = (maxy - miny) / (tile_size_y as f64);
+        // let (minx, miny, maxx, maxy) = bbox_3857;
+        let res_x = (extent_3857.maxx - extent_3857.minx) / (tile_size_x as f64);
+        let res_y = (extent_3857.maxy - extent_3857.miny) / (tile_size_y as f64);
 
         let mem_drv = DriverManager::get_driver_by_name("MEM")
             .map_err(|e| GdalError::BadArgument(e.to_string()))?;
@@ -67,7 +68,7 @@ pub async fn process_cog(
             )
             .map_err(|e| GdalError::BadArgument(e.to_string()))?;
         dst_ds
-            .set_geo_transform(&[minx, res_x, 0.0, maxy, 0.0, -res_y])
+            .set_geo_transform(&[extent_3857.minx, res_x, 0.0, extent_3857.maxy, 0.0, -res_y])
             .map_err(|e| GdalError::BadArgument(e.to_string()))?;
 
         // Setup reprojection of tile. Potential memory issues with unsafe code
@@ -105,8 +106,8 @@ pub async fn process_cog(
 
         for y in 0..tile_size_y {
             for x in 0..tile_size_x {
-                let gx = minx + (x as f64) * res_x;
-                let gy = maxy - (y as f64) * res_y;
+                let gx = extent_3857.minx + (x as f64) * res_x;
+                let gy = extent_3857.maxy - (y as f64) * res_y;
                 if gx < orig_minx_3857
                     || gx > orig_maxx_3857
                     || gy < orig_miny_3857
@@ -204,8 +205,12 @@ pub async fn process_cog(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::reader::GeometryExtent;
-    use crate::reader::{ColourStop, Layer, LayerGeometry, cog::process_cog};
+    use crate::models::{
+        geometry::GeometryExtent,
+        layer::{Layer, LayerGeometry},
+        style::ColourStop,
+    };
+    use crate::reader::cog::process_cog;
     use gdal::spatial_ref::SpatialRef;
     use gdal::{Dataset, DriverManager};
     use image::{ColorType, ImageDecoder, codecs::png::PngDecoder};
@@ -335,9 +340,14 @@ mod tests {
         layer.path = path.clone();
         layer.size_bytes = fs::metadata(&path).unwrap().len();
 
-        let buffer = process_cog(path.clone(), (0.0, 256.0, 0.0, 256.0), layer, tile_size)
-            .await
-            .expect("process_cog should succeed");
+        let buffer = process_cog(
+            path.clone(),
+            (0.0, 256.0, 0.0, 256.0).into(),
+            layer,
+            tile_size,
+        )
+        .await
+        .expect("process_cog should succeed");
 
         assert!(!buffer.is_empty(), "Output buffer must not be empty");
         let decoder = PngDecoder::new(Cursor::new(&buffer)).unwrap();
@@ -345,30 +355,6 @@ mod tests {
 
         drop(tmp);
     }
-
-    // #[tokio::test]
-    // async fn test_nodata_values_are_transparent() {
-    //     let tile_size = (256, 256);
-    //     let (tmp, path) = generate_random_cog(tile_size);
-    //     let mut layer = make_layer(0.0, 100.0).await;
-    //     layer.path = path.clone();
-    //     layer.size_bytes = fs::metadata(&path).unwrap().len();
-
-    //     let buffer = process_cog(path.clone(), (0.0, 256.0, 0.0, 256.0), layer, tile_size)
-    //         .await
-    //         .expect("process_cog should succeed");
-
-    //     let img = image::load_from_memory(&buffer)
-    //         .expect("Failed to load image")
-    //         .to_rgba8();
-    //     let transparent_count = img.pixels().filter(|p| p.0[3] == 0).count();
-    //     assert!(
-    //         transparent_count > 0,
-    //         "Expected transparent pixels for no-data"
-    //     );
-
-    //     drop(tmp);
-    // }
 
     #[test]
     fn test_nodata_mask_generation() {
