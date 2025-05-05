@@ -45,10 +45,10 @@ pub struct LayerGeometry {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct GeometryExtent {
-    minx: f64,
-    miny: f64,
-    maxx: f64,
-    maxy: f64,
+    pub minx: f64,
+    pub miny: f64,
+    pub maxx: f64,
+    pub maxy: f64,
 }
 
 impl From<(f64, f64, f64, f64)> for GeometryExtent {
