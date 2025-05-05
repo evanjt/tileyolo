@@ -1,0 +1,36 @@
+name: Cargo tests
+
+on:
+  push:
+
+jobs:
+  test:
+    name: Run cargo tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v3
+
+      - name: Install native libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            pkg-config \
+            cmake \
+            sqlite3 \
+            libsqlite3-dev \
+            proj-bin \
+            libproj-dev \
+            gdal-bin \
+            libgdal-dev
+
+      - name: Set up Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+
+      - name: Run tests
+        run: cargo test --verbose
