@@ -168,13 +168,12 @@ impl LocalTileReader {
         let origin_y = gt[3];
         let pixel_height = gt[5];
         let (width, height) = ds.raster_size();
-        let extent: GeometryExtent = (
-            origin_x,
-            (origin_x + pixel_width * width as f64),
-            origin_y,
-            (origin_y + pixel_height * height as f64),
-        )
-            .into();
+        let extent = GeometryExtent {
+            minx: origin_x,
+            maxx: origin_x + pixel_width * (width as f64),
+            miny: origin_y + pixel_height * (height as f64),
+            maxy: origin_y,
+        };
 
         let file_stem = path
             .file_stem()
