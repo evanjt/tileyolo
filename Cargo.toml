@@ -1,6 +1,6 @@
 [package]
 name = "tileyolo"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 description = "A simple raster-based XYZ tile server for serving GeoTIFFs"
 license = "MIT"
