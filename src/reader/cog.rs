@@ -9,6 +9,11 @@ use proj::Proj;
 use std::{io::Cursor, path::PathBuf};
 use tokio::task;
 
+// Returns true if the value should be treated as nodata (currently, if it is NaN)
+fn is_nodata(val: f32) -> bool {
+    val.is_nan()
+}
+
 pub async fn process_cog(
     input_path: PathBuf,
     extent_3857: GeometryExtent,
@@ -42,6 +47,12 @@ pub async fn process_cog(
         // Open source dataset, S3 is /vsis3/{bucket}/{key}, otherwise file.
         let src_ds = Dataset::open(&input_path)?;
 
+        // Retrieve nodata value from the source dataset (band 1)
+        let src_band = src_ds
+            .rasterband(Config::default().default_raster_band)
+            .map_err(|e| GdalError::BadArgument(e.to_string()))?;
+        let src_nodata_opt: Option<f32> = src_band.no_data_value().map(|v| v as f32);
+
         // Prepare an in‐memory 256×256 target in Web mercator 3857
         // let (minx, miny, maxx, maxy) = bbox_3857;
         let res_x = (extent_3857.maxx - extent_3857.minx) / (tile_size_x as f64);
@@ -71,6 +82,16 @@ pub async fn process_cog(
             .set_geo_transform(&[extent_3857.minx, res_x, 0.0, extent_3857.maxy, 0.0, -res_y])
             .map_err(|e| GdalError::BadArgument(e.to_string()))?;
 
+        // Set the nodata value for the destination raster band BEFORE reprojection
+        if let Some(src_nodata) = src_nodata_opt {
+            let mut dst_band = dst_ds
+                .rasterband(Config::default().default_raster_band)
+                .map_err(|e| GdalError::BadArgument(e.to_string()))?;
+            dst_band
+                .set_no_data_value(Some(src_nodata as f64))
+                .map_err(|e| GdalError::BadArgument(e.to_string()))?;
+        }
+
         // Setup reprojection of tile. Potential memory issues with unsafe code
         // however gdalwarp is not available in gdal crate as yet.
         unsafe {
@@ -88,18 +109,30 @@ pub async fn process_cog(
             );
         }
 
-        // Read the warped 256×256 band as f32
         let dst_band = dst_ds
-            .rasterband(1)
+            .rasterband(Config::default().default_raster_band)
             .map_err(|e| GdalError::BadArgument(e.to_string()))?;
-        let nodata_opt: Option<f32> = dst_band.no_data_value().map(|v| v as f32);
-        let is_nodata = |v: f32| v.is_nan() || nodata_opt.map(|nd| v == nd).unwrap_or(false);
 
         // Read the warped 256×256 band into a buffer
         let mut buffer = dst_band
             .read_as::<f32>((0, 0), tile_size, tile_size, None)?
             .data()
             .to_vec();
+
+        // Map nodata values (including 0.0) to NaN in the buffer used for rendering
+        if let Some(src_nodata) = src_nodata_opt {
+            for value in buffer.iter_mut() {
+                if *value == src_nodata {
+                    *value = f32::NAN;
+                }
+            }
+        }
+        // Also treat 0.0 as nodata
+        for value in buffer.iter_mut() {
+            if *value == 0.0 {
+                *value = f32::NAN;
+            }
+        }
 
         // Any pixel whose geographic coordinate falls outside the original extent
         // should be treated as nodata (NaN), not 0.0.
@@ -360,7 +393,9 @@ mod tests {
     fn test_nodata_mask_generation() {
         let (tmp, path) = generate_random_cog((256, 256));
         let ds = Dataset::open(&path).unwrap();
-        let band = ds.rasterband(1).unwrap();
+        let band = ds
+            .rasterband(Config::default().default_raster_band)
+            .unwrap();
 
         let data: Vec<f32> = band
             .read_as::<f32>((0, 0), (10, 10), (10, 10), None)
