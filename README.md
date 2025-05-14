@@ -4,7 +4,28 @@
 
 Drop your TIFFs into subfolders by style and run `tileyolo` — it handles everything else.
 
-## Install
+## Usage
+
+### Docker
+
+Get up and running immediately! Organise a folder `data` with a subfolder according to the style, such as `./data/viridis`, to colour them against the `viridis` colour palette (Read [styling and folder structure](#styles--folder-structure) for customisation options):
+
+```bash
+./data
+└── viridis
+    ├── world-dem.tif
+    └── treescape.tif
+```
+then run: 
+
+```
+docker run -v ./data:/app/data -p 8000:8000 ghcr.io/evanjt/evanjt/tileyolo:latest
+```
+
+You can then browse all of the loaded rasters by going to [http://localhost:8000/map](http://localhost:8000/map)
+
+
+### Install
 
 ```bash
 cargo install tileyolo
@@ -16,11 +37,10 @@ Or use as a library:
 cargo add tileyolo
 ```
 
-## Usage
-
 #### Dependencies
 
 * GDAL
+* Proj
 
 ### Cargo
 
@@ -37,14 +57,7 @@ cargo add tileyolo
 
 TileYolo will auto-detect styles (`style.txt` or built-in palettes), handle no-data values, and serve tiles on port 8000.
 
-### Docker
 
-To run with the docker image on port 8000 and mapping the local folder `./data`, 
-use the command:
-
-```
-docker run -v ./data:/app/data -p 8000:8000 ghcr.io/evanjt/evanjt/tileyolo:latest
-```
 
 ## Styles & Folder Structure
 
@@ -67,6 +80,21 @@ Organize your GeoTIFFs into style-specific subfolders:
 - **Built-in palettes**: Folders named `viridis`, `magma`, `plasma`, `inferno`, `turbo`, `cubehelix_default`, `rainbow`, `spectral`, or `sinebow` apply the corresponding gradient.
 - **Grayscale fallback**: Other folders without any style file render in linear grayscale.
 
+
+#### QGIS `style.txt` Example
+
+```text
+# QGIS Generated Colour Map Export File
+INTERPOLATION:INTERPOLATED
+0,215,25,28,255,0
+100,253,174,97,255,100
+200,255,255,191,255,200
+300,171,221,164,255,300
+400,43,131,186,255,400
+```
+
+See [QGIS Raster Properties → Symbology → Colour Ramp](https://docs.qgis.org/3.40/en/docs/user_manual/working_with_raster/raster_properties.html#id13) for export instructions.
+
 ## Sample Output
 
 ![Startup example with file tree](./docs/startup.svg)
@@ -84,20 +112,6 @@ Options:
   -h, --help           Print help
   -V, --version        Print version
 ```
-
-## QGIS `style.txt` Example
-
-```text
-# QGIS Generated Colour Map Export File
-INTERPOLATION:INTERPOLATED
-0,215,25,28,255,0
-100,253,174,97,255,100
-200,255,255,191,255,200
-300,171,221,164,255,300
-400,43,131,186,255,400
-```
-
-See [QGIS Raster Properties → Symbology → Colour Ramp](https://docs.qgis.org/3.40/en/docs/user_manual/working_with_raster/raster_properties.html#id13) for export instructions.
 
 ## Why TileYolo?
 
