@@ -15,18 +15,36 @@ use crate::{
 use async_trait::async_trait;
 use gdal::{Dataset, Metadata};
 use indicatif::{ProgressBar, ProgressStyle};
+use moka::future::Cache;
+use std::sync::Arc;
 use std::{
     collections::HashMap,
     path::PathBuf,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use walkdir::{DirEntry, WalkDir};
+
+#[derive(Hash, PartialEq, Eq, Clone, Debug)]
+pub struct TileCacheKey {
+    pub layer: String,
+    pub z: u8,
+    pub x: u32,
+    pub y: u32,
+    pub style: Option<String>,
+}
+
 pub struct LocalTileReader {
     layers: HashMap<String, Vec<Layer>>,
+    pub tile_cache: Arc<Cache<TileCacheKey, Arc<Vec<u8>>>>,
+    pub stats: crate::utils::status::Stats,
 }
 
 impl LocalTileReader {
-    pub async fn new(root: &PathBuf) -> Self {
+    pub async fn new(
+        root: &PathBuf,
+        cache_size_bytes: u64,
+        stats: crate::utils::status::Stats,
+    ) -> Self {
         // Load cache (CSV, one line per record)
         let cache_path = root.join(".metadata_cache.csv");
         let old_cache: MetadataCache = load_cache(&cache_path);
@@ -55,6 +73,8 @@ impl LocalTileReader {
         if entries.is_empty() {
             return Self {
                 layers: HashMap::new(),
+                tile_cache: Arc::new(Cache::builder().max_capacity(cache_size_bytes).build()),
+                stats,
             };
         }
 
@@ -153,7 +173,11 @@ impl LocalTileReader {
             layers_map.entry(layer_name).or_default().push(layer);
         }
 
-        Self { layers: layers_map }
+        Self {
+            layers: layers_map,
+            tile_cache: Arc::new(Cache::builder().max_capacity(cache_size_bytes).build()),
+            stats,
+        }
     }
 
     async fn get_tiff_metadata(entry: DirEntry) -> anyhow::Result<Layer> {
@@ -255,7 +279,7 @@ impl TileReader for LocalTileReader {
         z: u8,
         x: u32,
         y: u32,
-        _style: Option<&str>,
+        style: Option<&str>,
     ) -> anyhow::Result<TileResponse, String> {
         let tile_size = (256, 256);
 
@@ -266,11 +290,34 @@ impl TileReader for LocalTileReader {
             .ok_or_else(|| format!("Layer not found: '{}'", layer))?;
 
         let extent: GeometryExtent = tile_bounds_to_3857(z, x, y);
+        let cache_key = TileCacheKey {
+            layer: layer.to_string(),
+            z,
+            x,
+            y,
+            style: style.map(|s| s.to_string()),
+        };
+
+        // Try cache first
+        if let Some(tile) = self.tile_cache.get(&cache_key).await {
+            self.stats.record_hit();
+            self.stats.record_served();
+            return Ok(TileResponse {
+                content_type: "image/png".into(),
+                bytes: (*tile).clone(),
+            });
+        }
+        self.stats.record_miss();
 
         // always hand off to process_cog; it will do the extent-check itself
         let png_data = process_cog(layer_obj.path.clone(), extent, layer_obj.clone(), tile_size)
             .await
             .map_err(|e| e.to_string())?;
+
+        // Insert into cache if it fits (moka will evict if needed)
+        let arc_png = Arc::new(png_data.clone());
+        self.tile_cache.insert(cache_key, arc_png).await;
+        self.stats.record_served();
 
         Ok(TileResponse {
             content_type: "image/png".into(),

@@ -15,6 +15,7 @@ pub struct Config {
     pub tile_size_y: u32,
     pub port: u16,
     pub default_raster_band: usize,
+    pub cache_size_gb: usize, // Add cache size in GB
 }
 
 impl Default for Config {
@@ -28,6 +29,7 @@ impl Default for Config {
             tile_size_y: 256,
             port: 8000,
             default_raster_band: 1,
+            cache_size_gb: 2, // Default to 2GB
         }
     }
 }

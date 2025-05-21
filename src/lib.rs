@@ -2,7 +2,7 @@ mod config;
 mod geometry;
 mod models;
 mod traits;
-mod utils;
+pub mod utils;
 
 pub mod endpoints;
 pub mod reader;

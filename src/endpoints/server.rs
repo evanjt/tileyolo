@@ -1,41 +1,60 @@
 use crate::config::{Config, Source};
-use crate::endpoints::handlers::{get_all_layers, tile_handler, webmap_handler};
+use crate::endpoints::handlers::{
+    get_all_layers, stats_dashboard, stats_ws, tile_handler, webmap_handler,
+};
 use crate::reader::local::LocalTileReader;
 use crate::traits::TileReader;
 use axum::{Router, routing::get};
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+pub struct AppState {
+    pub reader: Arc<dyn TileReader>,
+    pub cache: Option<Arc<moka::future::Cache<crate::reader::local::TileCacheKey, Arc<Vec<u8>>>>>,
+    pub stats: Option<crate::utils::status::Stats>,
+    pub max_cache: u64,
+}
+
 pub struct TileServer {
     config: Config,
-    reader: Arc<dyn TileReader>,
+    state: AppState,
 }
 
 impl TileServer {
     pub async fn new(config: Config) -> anyhow::Result<Self> {
-        let reader: Arc<dyn TileReader> = match &config.source {
-            Some(Source::Local(path)) => Arc::new(LocalTileReader::new(path).await),
+        let cache_size_bytes = (config.cache_size_gb as u64) * 1024 * 1024 * 1024;
+        let stats = crate::utils::status::Stats::default();
+        match &config.source {
+            Some(Source::Local(path)) => {
+                let reader = LocalTileReader::new(path, cache_size_bytes, stats.clone()).await;
+                let cache = reader.tile_cache.clone();
+                let state = AppState {
+                    reader: Arc::new(reader),
+                    cache: Some(cache),
+                    stats: Some(stats),
+                    max_cache: cache_size_bytes,
+                };
+                return Ok(Self { config, state });
+            }
             Some(Source::S3 { .. }) => unimplemented!("S3 backend is not yet implemented"),
             None => anyhow::bail!("No source provided in the configuration"),
-        };
-
-        // if reader
-        Ok(Self { config, reader })
+        }
     }
 
     pub async fn start(self) -> anyhow::Result<()> {
-        // Tile-serving router with state
+        let state = Arc::new(self.state);
         let app = Router::new()
             .route("/tiles/{layer}/{z}/{x}/{y}", get(tile_handler))
             .route("/layers", get(get_all_layers))
             .route("/map", get(webmap_handler))
-            .with_state(self.reader.clone());
-
+            .route("/stats", get(stats_dashboard))
+            .route("/stats/ws", get(stats_ws))
+            .with_state(state.clone());
         let addr = SocketAddr::from(([0, 0, 0, 0], self.config.port));
         let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
 
         // Choose a random layer for the example URL
-        let layers = self.reader.list_layers().await;
+        let layers = state.reader.list_layers().await;
 
         if layers.is_empty() {
             println!(
@@ -61,13 +80,14 @@ impl TileServer {
 
     📚 Query for all layers (JSON)
        → http://{}/layers
+
+    📊 Live cache stats dashboard
+       → http://{}/stats
             "#,
-            addr, random_layer, addr, random_layer, addr, addr
+            addr, random_layer, addr, random_layer, addr, addr, addr
         );
 
-        axum::serve(listener, app.into_make_service())
-            .await
-            .unwrap();
+        axum::serve(listener, app).await.unwrap();
 
         Ok(())
     }

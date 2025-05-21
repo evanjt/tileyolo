@@ -1,6 +1,7 @@
 use clap::Parser;
 use std::path::PathBuf;
 use tileyolo::{Config, Source, TileServer};
+use tokio::task;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
@@ -20,22 +21,26 @@ struct Cli {
         help = "Port to run the server on"
     )]
     port: u16,
+    #[arg(
+        long,
+        default_value_t = 2,
+        value_name = "CACHE_SIZE_GB",
+        help = "Tile cache size in GB (default: 2)"
+    )]
+    cache_size_gb: usize,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-
-    // Use the value from the command line argument (default from config is provided to it already)
     let config = Config {
         source: Some(Source::Local(Config::parse_path_to_absolute(
             &PathBuf::from(cli.data_folder),
         ))),
         port: cli.port,
-        ..Config::default() // Then fill with the rest of the default config
+        cache_size_gb: cli.cache_size_gb,
+        ..Config::default()
     };
-
     let server = TileServer::new(config).await?;
-
     server.start().await
 }

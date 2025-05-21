@@ -4,6 +4,41 @@ use crate::{
 };
 use comfy_table::{Attribute, Cell, CellAlignment, Table};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+#[derive(Default, Clone)]
+pub struct Stats {
+    pub served_tiles: Arc<AtomicU64>,
+    pub cache_hits: Arc<AtomicU64>,
+    pub cache_misses: Arc<AtomicU64>,
+    pub last_served: Arc<Mutex<Vec<Instant>>>, // For speed calc
+}
+
+impl Stats {
+    pub fn record_served(&self) {
+        self.served_tiles.fetch_add(1, Ordering::Relaxed);
+        let mut v = self.last_served.lock().unwrap();
+        let len = v.len();
+        if len > 1000 {
+            v.drain(0..len - 1000);
+        }
+        v.push(Instant::now());
+    }
+    pub fn record_hit(&self) {
+        self.cache_hits.fetch_add(1, Ordering::Relaxed);
+    }
+    pub fn record_miss(&self) {
+        self.cache_misses.fetch_add(1, Ordering::Relaxed);
+    }
+    pub fn speed(&self) -> f64 {
+        let v = self.last_served.lock().unwrap();
+        let now = Instant::now();
+        let one_sec_ago = now - Duration::from_secs(1);
+        v.iter().filter(|&&t| t > one_sec_ago).count() as f64
+    }
+}
 
 pub fn print_layer_summary(layers: &Vec<Layer>) {
     let mut style_info: HashMap<String, (usize, Vec<ColourStop>, f32, f32, usize)> = HashMap::new();
