@@ -1,6 +1,6 @@
 use crate::geometry::projection::{lon_lat_to_mercator, mercator_to_lon_lat};
 use crate::models::{geometry::GeometryExtent, style::ColourStop};
-use serde::Serialize;
+use serde::{Serialize, Deserialize};
 use std::{collections::HashMap, path::PathBuf};
 
 #[derive(Debug, Clone)]
@@ -18,7 +18,7 @@ pub struct Layer {
     pub last_modified: std::time::SystemTime,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LayerGeometry {
     pub crs_code: i32,
     pub extent: GeometryExtent,

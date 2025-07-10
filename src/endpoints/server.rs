@@ -6,6 +6,14 @@ use axum::{Router, routing::get};
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+pub fn create_router(reader: Arc<dyn TileReader>) -> Router {
+    Router::new()
+        .route("/tiles/{layer}/{z}/{x}/{y}", get(tile_handler))
+        .route("/layers", get(get_all_layers))
+        .route("/map", get(webmap_handler))
+        .with_state(reader)
+}
+
 pub struct TileServer {
     config: Config,
     reader: Arc<dyn TileReader>,
@@ -25,11 +33,7 @@ impl TileServer {
 
     pub async fn start(self) -> anyhow::Result<()> {
         // Tile-serving router with state
-        let app = Router::new()
-            .route("/tiles/{layer}/{z}/{x}/{y}", get(tile_handler))
-            .route("/layers", get(get_all_layers))
-            .route("/map", get(webmap_handler))
-            .with_state(self.reader.clone());
+        let app = create_router(self.reader.clone());
 
         let addr = SocketAddr::from(([0, 0, 0, 0], self.config.port));
         let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
