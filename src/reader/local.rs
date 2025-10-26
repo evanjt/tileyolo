@@ -175,11 +175,10 @@ impl LocalTileReader {
         };
 
         // Use cog3pio to read metadata
-        let array = crate::reader::cog::try_read_geotiff_with_flexible_type(&path)
+        let raster = crate::reader::cog::try_read_geotiff_with_flexible_type(&path)
             .map_err(|e| anyhow::anyhow!("Failed to read GeoTIFF: {}", e))?;
 
-        // Get dimensions from array
-        let (_bands, height, width) = array.dim();
+        let (_bands, height, width) = raster.dimensions();
 
         // Create a default extent for now
         // TODO: Extract proper extent from GeoTIFF tags
@@ -195,7 +194,7 @@ impl LocalTileReader {
         let is_cog = true; // Assume COG for now
         let auth_code = 3857; // Default to Web Mercator
 
-        let (min_value, max_value) = {
+        let (min_value, max_value) = if let Some(array) = raster.as_array() {
             let mut min = f32::INFINITY;
             let mut max = f32::NEG_INFINITY;
 
@@ -207,10 +206,15 @@ impl LocalTileReader {
             }
 
             if min.is_infinite() || max.is_infinite() {
-                (0.0, 1.0) // Default values if all NaN
+                (0.0, 1.0)
             } else {
                 (min, max)
             }
+        } else if let Some(lzw) = raster.as_lzw() {
+            lzw.compute_min_max()
+                .map_err(|e| anyhow::anyhow!("Failed to compute LZW min/max: {}", e))?
+        } else {
+            (0.0, 1.0)
         };
 
         let last_modified = entry

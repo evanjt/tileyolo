@@ -1,6 +1,6 @@
 use crate::geometry::projection::{lon_lat_to_mercator, mercator_to_lon_lat};
 use crate::models::{geometry::GeometryExtent, style::ColourStop};
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, path::PathBuf};
 
 #[derive(Debug, Clone)]

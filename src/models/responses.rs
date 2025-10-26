@@ -1,5 +1,5 @@
+use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::http::{header, StatusCode};
 
 pub struct TileResponse {
     pub bytes: Vec<u8>,

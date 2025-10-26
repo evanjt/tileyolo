@@ -30,7 +30,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         _ => return Err("Not a TIFF file".into()),
     };
 
-    println!("Byte order: {}", if little_endian { "Little endian" } else { "Big endian" });
+    println!(
+        "Byte order: {}",
+        if little_endian {
+            "Little endian"
+        } else {
+            "Big endian"
+        }
+    );
 
     // Try to read IFD offset
     let ifd_offset = if little_endian {

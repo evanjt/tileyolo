@@ -1,7 +1,8 @@
 pub mod cog;
-pub mod lzw_fallback;
 pub mod local;
+pub mod lzw_fallback;
 pub mod metadata;
+pub mod raster;
 pub mod s3;
 
 // #[cfg(test)]

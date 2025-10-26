@@ -1,10 +1,10 @@
 #[cfg(test)]
 mod tests {
-    use crate::reader::cog::process_cog;
     use crate::models::{
         geometry::GeometryExtent,
         layer::{Layer, LayerGeometry},
     };
+    use crate::reader::cog::process_cog;
     use std::path::PathBuf;
 
     async fn make_simple_layer() -> Layer {
@@ -48,12 +48,7 @@ mod tests {
             maxy: 256.0,
         };
 
-        let result = process_cog(
-            layer.path.clone(),
-            extent,
-            layer,
-            (256, 256),
-        ).await;
+        let result = process_cog(layer.path.clone(), extent, layer, (256, 256)).await;
 
         // We expect this to fail because the file doesn't exist
         assert!(result.is_err());

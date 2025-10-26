@@ -1,23 +1,33 @@
 use crate::models::geometry::GeometryExtent;
 use crate::models::layer::Layer;
+use crate::reader::lzw_fallback::LzwRasterSource;
+use crate::reader::raster::{ArrayRasterSource, RasterSource};
 use crate::utils::style::get_builtin_gradient;
 use geo::{AffineTransform, Coord};
 use image::{ColorType, ImageEncoder, Rgba, RgbaImage, codecs::png::PngEncoder};
 use ndarray::Array3;
+use once_cell::sync::Lazy;
+use std::collections::HashMap;
 use std::io::Cursor;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::collections::HashMap;
 use tokio::task;
-use once_cell::sync::Lazy;
 
 // Global cache for loaded GeoTIFF arrays to avoid reloading entire files
-static ARRAY_CACHE: Lazy<std::sync::Mutex<HashMap<String, (Arc<Array3<f32>>, AffineTransform<f64>)>>> =
+type CachedSource = Arc<dyn RasterSource>;
+
+static ARRAY_CACHE: Lazy<std::sync::Mutex<HashMap<String, (CachedSource, AffineTransform<f64>)>>> =
     Lazy::new(|| std::sync::Mutex::new(HashMap::new()));
 
 // Use a better synchronization approach with Arc<Mutex<Option<...>>> for proper waiting
-static LOADING_FILES: Lazy<std::sync::Mutex<HashMap<String, std::sync::Arc<std::sync::Mutex<Option<(Arc<Array3<f32>>, AffineTransform<f64>)>>>>>> =
-    Lazy::new(|| std::sync::Mutex::new(HashMap::new()));
+static LOADING_FILES: Lazy<
+    std::sync::Mutex<
+        HashMap<
+            String,
+            std::sync::Arc<std::sync::Mutex<Option<(CachedSource, AffineTransform<f64>)>>>,
+        >,
+    >,
+> = Lazy::new(|| std::sync::Mutex::new(HashMap::new()));
 
 // Cache for files that have failed to load - with reduced persistence for retry attempts
 static FAILED_FILES: Lazy<std::sync::Mutex<HashMap<String, (String, std::time::Instant)>>> =
@@ -31,11 +41,61 @@ fn is_nodata(val: f32) -> bool {
     val.is_nan()
 }
 
+pub enum RasterReadResult {
+    Array(Array3<f32>),
+    Lzw(LzwRasterSource),
+}
+
+impl RasterReadResult {
+    pub fn dimensions(&self) -> (usize, usize, usize) {
+        match self {
+            RasterReadResult::Array(array) => array.dim(),
+            RasterReadResult::Lzw(source) => (source.bands(), source.height(), source.width()),
+        }
+    }
+
+    fn geo_tags(&self) -> (Option<[f64; 3]>, Option<[f64; 6]>) {
+        match self {
+            RasterReadResult::Array(_) => (None, None),
+            RasterReadResult::Lzw(source) => (source.pixel_scale(), source.tiepoint()),
+        }
+    }
+
+    fn into_cached_source(self) -> CachedSource {
+        match self {
+            RasterReadResult::Array(array) => {
+                let arc_array = Arc::new(array);
+                Arc::new(ArrayRasterSource::new(arc_array))
+            }
+            RasterReadResult::Lzw(source) => Arc::new(source),
+        }
+    }
+
+    pub fn as_array(&self) -> Option<&Array3<f32>> {
+        match self {
+            RasterReadResult::Array(array) => Some(array),
+            _ => None,
+        }
+    }
+
+    pub fn as_lzw(&self) -> Option<&LzwRasterSource> {
+        match self {
+            RasterReadResult::Lzw(source) => Some(source),
+            _ => None,
+        }
+    }
+}
+
 /// Load COG data using cog3pio with proper caching and race condition prevention
-fn load_cog_data(path: &PathBuf) -> Result<(Arc<Array3<f32>>, AffineTransform<f64>), Box<dyn std::error::Error + Send + Sync>> {
+fn load_cog_data(
+    path: &PathBuf,
+) -> Result<(CachedSource, AffineTransform<f64>), Box<dyn std::error::Error + Send + Sync>> {
     // Create a cache key from the file path and modification time
     let metadata = std::fs::metadata(path)?;
-    let modified = metadata.modified()?.duration_since(std::time::UNIX_EPOCH)?.as_secs();
+    let modified = metadata
+        .modified()?
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs();
     let cache_key = format!("{}:{}", path.display(), modified);
 
     // Check if this file has failed to load before (only if recently failed)
@@ -43,10 +103,15 @@ fn load_cog_data(path: &PathBuf) -> Result<(Arc<Array3<f32>>, AffineTransform<f6
         let mut failed_files = FAILED_FILES.lock().unwrap();
         // Clean up expired entries first
         let now = std::time::Instant::now();
-        failed_files.retain(|_, (_, timestamp)| now.duration_since(*timestamp) < FAILURE_CACHE_DURATION);
+        failed_files
+            .retain(|_, (_, timestamp)| now.duration_since(*timestamp) < FAILURE_CACHE_DURATION);
 
         if let Some((error_msg, _timestamp)) = failed_files.get(&cache_key) {
-            println!("Using recent cached failure for {}: {}", path.display(), error_msg);
+            println!(
+                "Using recent cached failure for {}: {}",
+                path.display(),
+                error_msg
+            );
             return Err(format!("Recent cached failure: {}", error_msg).into());
         }
     }
@@ -57,8 +122,8 @@ fn load_cog_data(path: &PathBuf) -> Result<(Arc<Array3<f32>>, AffineTransform<f6
     // Check cache first while holding the lock
     {
         let cache = ARRAY_CACHE.lock().unwrap();
-        if let Some((cached_array, cached_transform)) = cache.get(&cache_key) {
-            return Ok((cached_array.clone(), *cached_transform));
+        if let Some((cached_source, cached_transform)) = cache.get(&cache_key) {
+            return Ok((cached_source.clone(), *cached_transform));
         }
     }
 
@@ -71,9 +136,9 @@ fn load_cog_data(path: &PathBuf) -> Result<(Arc<Array3<f32>>, AffineTransform<f6
         // Wait for the loading to complete by checking the shared state
         loop {
             let state_guard = state_clone.lock().unwrap();
-            if let Some((ref array, ref transform)) = *state_guard {
+            if let Some((ref source, ref transform)) = *state_guard {
                 // Loading completed, return the result
-                return Ok((array.clone(), *transform));
+                return Ok((source.clone(), *transform));
             }
             drop(state_guard);
 
@@ -92,17 +157,17 @@ fn load_cog_data(path: &PathBuf) -> Result<(Arc<Array3<f32>>, AffineTransform<f6
 
     // Store the result in both places regardless of success/failure
     match &load_result {
-        Ok((array, transform)) => {
+        Ok((source, transform)) => {
             // Store in main cache
             {
                 let mut cache = ARRAY_CACHE.lock().unwrap();
-                cache.insert(cache_key.clone(), (array.clone(), *transform));
+                cache.insert(cache_key.clone(), (source.clone(), *transform));
             }
 
             // Store in loading state for any waiters
             {
                 let mut state_guard = new_state.lock().unwrap();
-                *state_guard = Some((array.clone(), *transform));
+                *state_guard = Some((source.clone(), *transform));
             }
         }
         Err(e) => {
@@ -119,70 +184,73 @@ fn load_cog_data(path: &PathBuf) -> Result<(Arc<Array3<f32>>, AffineTransform<f6
 }
 
 /// Internal function that actually loads the COG data
-fn load_cog_data_internal(path: &PathBuf, cache_key: &str) -> Result<(Arc<Array3<f32>>, AffineTransform<f64>), Box<dyn std::error::Error + Send + Sync>> {
+fn load_cog_data_internal(
+    path: &PathBuf,
+    cache_key: &str,
+) -> Result<(CachedSource, AffineTransform<f64>), Box<dyn std::error::Error + Send + Sync>> {
     // For now, only support local files
     // TODO: Implement HTTP/S3 support in a simpler way
     let _file = std::fs::File::open(path)?;
 
     // Try different data types until we find one that works
-    let array = match try_read_geotiff_with_flexible_type(&path) {
-        Ok(array) => array,
+    let raster = match try_read_geotiff_with_flexible_type(path) {
+        Ok(result) => result,
         Err(e) => {
             // Cache the failure temporarily to prevent repeated attempts (but allow retry after 5 minutes)
             let error_msg = e.to_string();
             {
                 let mut failed_files = FAILED_FILES.lock().unwrap();
-                failed_files.insert(cache_key.to_string(), (error_msg.clone(), std::time::Instant::now()));
+                failed_files.insert(
+                    cache_key.to_string(),
+                    (error_msg.clone(), std::time::Instant::now()),
+                );
             }
             return Err(e);
         }
     };
-    let (_bands, height, width) = array.dim();
+    let (_bands, height, width) = raster.dimensions();
+    let (pixel_scale, tiepoint) = raster.geo_tags();
+    let transform = build_affine_transform(width, height, pixel_scale, tiepoint);
 
-    // Calculate a proper Web Mercator transform based on array dimensions
-    // Since the gray_3857.tif appears to be in Web Mercator projection
-    // and covers a significant portion of the globe, we'll create a transform
-    // that maps pixel coordinates to Web Mercator coordinates
+    let source = raster.into_cached_source();
 
-    // Web Mercator extent: -20037508.342789244 to 20037508.342789244
-    let web_mercator_min = -20037508.342789244;
-    let web_mercator_max = 20037508.342789244;
-
-    // Calculate pixel resolution
-    let pixel_width = (web_mercator_max - web_mercator_min) / (width as f64);
-    let pixel_height = (web_mercator_max - web_mercator_min) / (height as f64);
-
-    // Create transform: maps pixel coordinates to world coordinates
-    // Using the standard GeoTIFF format:
-    // X = a*x + b*y + xoff
-    // Y = d*x + e*y + yoff
-    let transform = AffineTransform::new(
-        pixel_width,   // a: pixel width in world coordinates
-        0.0,           // b: rotation (0 for north-up)
-        web_mercator_min, // xoff: origin X coordinate (top-left)
-        0.0,           // d: rotation (0 for north-up)
-        -pixel_height, // e: negative pixel height (Y increases downward in pixels, upward in world coords)
-        web_mercator_max  // yoff: origin Y coordinate (top-left)
-    );
-
-    // Cache the loaded array and transform
-    let arc_array = Arc::new(array);
-    {
-        let mut cache = ARRAY_CACHE.lock().unwrap();
-        cache.insert(cache_key.to_string(), (arc_array.clone(), transform));
-    }
-
-    println!("DEBUG: Cached {}x{} array ({} MB)", width, height,
-             (width * height * 4) / (1024 * 1024));
-
-    Ok((arc_array, transform))
+    Ok((source, transform))
 }
 
-/// Try to read GeoTIFF with different data types and convert to f32
-pub fn try_read_geotiff_with_flexible_type(path: &PathBuf) -> Result<Array3<f32>, Box<dyn std::error::Error + Send + Sync>> {
+fn build_affine_transform(
+    width: usize,
+    height: usize,
+    pixel_scale: Option<[f64; 3]>,
+    tiepoint: Option<[f64; 6]>,
+) -> AffineTransform<f64> {
+    if let (Some(scale), Some(tie)) = (pixel_scale, tiepoint) {
+        let x_scale = scale[0];
+        let y_scale = scale[1];
+        let x_origin = tie[3];
+        let y_origin = tie[4];
+        AffineTransform::new(x_scale, 0.0, x_origin, 0.0, -y_scale, y_origin)
+    } else {
+        let web_mercator_min = -20037508.342789244;
+        let web_mercator_max = 20037508.342789244;
+        let pixel_width = (web_mercator_max - web_mercator_min) / (width as f64);
+        let pixel_height = (web_mercator_max - web_mercator_min) / (height as f64);
+        AffineTransform::new(
+            pixel_width,
+            0.0,
+            web_mercator_min,
+            0.0,
+            -pixel_height,
+            web_mercator_max,
+        )
+    }
+}
+
+/// Try to read GeoTIFF with different data types and convert to f32, returning a streamed source when needed.
+pub fn try_read_geotiff_with_flexible_type(
+    path: &PathBuf,
+) -> Result<RasterReadResult, Box<dyn std::error::Error + Send + Sync>> {
     println!("Attempting to read COG file: {}", path.display());
 
-    // Helper function to catch panics from cog3pio but provide more detailed error information
     fn safe_read<T, F>(operation: F) -> Result<T, Box<dyn std::error::Error + Send + Sync>>
     where
         F: FnOnce() -> Result<T, Box<dyn std::error::Error + Send + Sync>> + std::panic::UnwindSafe,
@@ -195,29 +263,26 @@ pub fn try_read_geotiff_with_flexible_type(path: &PathBuf) -> Result<Array3<f32>
                     Err(_) => "Unknown panic occurred while reading GeoTIFF".to_string(),
                 };
                 println!("ERROR: {}", error_msg);
-                // Don't immediately fallback - let the error propagate to see specific issues
                 Err(error_msg.into())
             }
         }
     }
 
-    // First, let's try our LZW fallback since the tiff crate is having assertion failures
-    println!("Trying LZW fallback first due to tiff crate assertion issues with this COG...");
+    println!("Trying LZW fallback first to avoid full image reads for problematic files...");
     match crate::reader::lzw_fallback::try_read_lzw_tiff_fallback(path) {
-        Ok(array) => {
-            println!("Successfully read GeoTIFF using LZW fallback!");
-            return Ok(array);
+        Ok(lzw_source) => {
+            println!("Successfully initialized streamed LZW reader");
+            return Ok(RasterReadResult::Lzw(lzw_source));
         }
         Err(e) => {
-            println!("LZW fallback failed: {}", e);
+            println!("LZW fallback initialization failed: {}", e);
         }
     }
 
-    // Try the dedicated cog3pio reader first for better LZW support
     match safe_read(|| try_read_with_cog3pio_reader(path)) {
         Ok(array) => {
             println!("Successfully read GeoTIFF with dedicated cog3pio reader (LZW-aware)");
-            return Ok(array);
+            return Ok(RasterReadResult::Array(array));
         }
         Err(e) => {
             println!("Dedicated cog3pio reader failed: {}", e);
@@ -226,108 +291,40 @@ pub fn try_read_geotiff_with_flexible_type(path: &PathBuf) -> Result<Array3<f32>
 
     let mut last_error = "No attempts made".to_string();
 
-    // Try u16 first (very common for elevation data)
-    match safe_read(|| try_read_as_u16(path)) {
-        Ok(array) => {
-            println!("Successfully read GeoTIFF as type: u16");
-            return Ok(array);
-        }
-        Err(e) => {
-            let error_str = e.to_string();
-            println!("Failed to read as u16: {}", error_str);
-            last_error = error_str;
-        }
-    }
+    let attempts: &[fn(
+        &PathBuf,
+    ) -> Result<Array3<f32>, Box<dyn std::error::Error + Send + Sync>>] = &[
+        try_read_as_u16,
+        try_read_as_u8,
+        try_read_as_f32,
+        try_read_as_i16,
+        try_read_as_u32,
+        try_read_as_i32,
+        try_read_as_f64,
+    ];
 
-    // Try u8 (very common for satellite imagery)
-    match safe_read(|| try_read_as_u8(path)) {
-        Ok(array) => {
-            println!("Successfully read GeoTIFF as type: u8");
-            return Ok(array);
-        }
-        Err(e) => {
-            let error_str = e.to_string();
-            println!("Failed to read as u8: {}", error_str);
-            last_error = error_str;
-        }
-    }
-
-    // Try f32 (original approach)
-    match safe_read(|| try_read_as_f32(path)) {
-        Ok(array) => {
-            println!("Successfully read GeoTIFF as type: f32");
-            return Ok(array);
-        }
-        Err(e) => {
-            let error_str = e.to_string();
-            println!("Failed to read as f32: {}", error_str);
-            last_error = error_str;
-        }
-    }
-
-    // Try i16
-    match safe_read(|| try_read_as_i16(path)) {
-        Ok(array) => {
-            println!("Successfully read GeoTIFF as type: i16");
-            return Ok(array);
-        }
-        Err(e) => {
-            let error_str = e.to_string();
-            println!("Failed to read as i16: {}", error_str);
-            last_error = error_str;
-        }
-    }
-
-    // Try u32
-    match safe_read(|| try_read_as_u32(path)) {
-        Ok(array) => {
-            println!("Successfully read GeoTIFF as type: u32");
-            return Ok(array);
-        }
-        Err(e) => {
-            let error_str = e.to_string();
-            println!("Failed to read as u32: {}", error_str);
-            last_error = error_str;
-        }
-    }
-
-    // Try i32
-    match safe_read(|| try_read_as_i32(path)) {
-        Ok(array) => {
-            println!("Successfully read GeoTIFF as type: i32");
-            return Ok(array);
-        }
-        Err(e) => {
-            let error_str = e.to_string();
-            println!("Failed to read as i32: {}", error_str);
-            last_error = error_str;
-        }
-    }
-
-    // Try f64
-    match safe_read(|| try_read_as_f64(path)) {
-        Ok(array) => {
-            println!("Successfully read GeoTIFF as type: f64");
-            return Ok(array);
-        }
-        Err(e) => {
-            let error_str = e.to_string();
-            println!("Failed to read as f64: {}", error_str);
-            last_error = error_str;
-        }
-    }
-
-    // As a last resort, try the LZW fallback but only for specific error scenarios
-    if last_error.contains("compression") || last_error.contains("LZW") || last_error.contains("unsupported") {
-        println!("Attempting LZW fallback as last resort for compression-related errors...");
-        match crate::reader::lzw_fallback::try_read_lzw_tiff_fallback(path) {
+    for attempt in attempts {
+        match safe_read(|| attempt(path)) {
             Ok(array) => {
-                println!("Successfully read GeoTIFF using LZW fallback!");
-                return Ok(array);
+                println!("Successfully read GeoTIFF via fallback data type");
+                return Ok(RasterReadResult::Array(array));
             }
             Err(e) => {
-                println!("LZW fallback also failed: {}", e);
+                let error_str = e.to_string();
+                println!("Alternate read failed: {}", error_str);
+                last_error = error_str;
             }
+        }
+    }
+
+    if last_error.contains("compression")
+        || last_error.contains("LZW")
+        || last_error.contains("unsupported")
+    {
+        println!("Retrying LZW fallback as a last resort...");
+        if let Ok(lzw_source) = crate::reader::lzw_fallback::try_read_lzw_tiff_fallback(path) {
+            println!("Successfully initialized streamed LZW reader on retry");
+            return Ok(RasterReadResult::Lzw(lzw_source));
         }
     }
 
@@ -347,44 +344,61 @@ fn try_read_as_u8(path: &PathBuf) -> Result<Array3<f32>, Box<dyn std::error::Err
     Ok(array.mapv(|x| x as f32))
 }
 
-fn try_read_as_u16(path: &PathBuf) -> Result<Array3<f32>, Box<dyn std::error::Error + Send + Sync>> {
+fn try_read_as_u16(
+    path: &PathBuf,
+) -> Result<Array3<f32>, Box<dyn std::error::Error + Send + Sync>> {
     let file = std::fs::File::open(path)?;
     let array: Array3<u16> = cog3pio::io::geotiff::read_geotiff(file)?;
     Ok(array.mapv(|x| x as f32))
 }
 
-fn try_read_as_i16(path: &PathBuf) -> Result<Array3<f32>, Box<dyn std::error::Error + Send + Sync>> {
+fn try_read_as_i16(
+    path: &PathBuf,
+) -> Result<Array3<f32>, Box<dyn std::error::Error + Send + Sync>> {
     let file = std::fs::File::open(path)?;
     let array: Array3<i16> = cog3pio::io::geotiff::read_geotiff(file)?;
     Ok(array.mapv(|x| x as f32))
 }
 
-fn try_read_as_u32(path: &PathBuf) -> Result<Array3<f32>, Box<dyn std::error::Error + Send + Sync>> {
+fn try_read_as_u32(
+    path: &PathBuf,
+) -> Result<Array3<f32>, Box<dyn std::error::Error + Send + Sync>> {
     let file = std::fs::File::open(path)?;
     let array: Array3<u32> = cog3pio::io::geotiff::read_geotiff(file)?;
     Ok(array.mapv(|x| x as f32))
 }
 
-fn try_read_as_i32(path: &PathBuf) -> Result<Array3<f32>, Box<dyn std::error::Error + Send + Sync>> {
+fn try_read_as_i32(
+    path: &PathBuf,
+) -> Result<Array3<f32>, Box<dyn std::error::Error + Send + Sync>> {
     let file = std::fs::File::open(path)?;
     let array: Array3<i32> = cog3pio::io::geotiff::read_geotiff(file)?;
     Ok(array.mapv(|x| x as f32))
 }
 
-fn try_read_as_f32(path: &PathBuf) -> Result<Array3<f32>, Box<dyn std::error::Error + Send + Sync>> {
+fn try_read_as_f32(
+    path: &PathBuf,
+) -> Result<Array3<f32>, Box<dyn std::error::Error + Send + Sync>> {
     let file = std::fs::File::open(path)?;
     Ok(cog3pio::io::geotiff::read_geotiff(file)?)
 }
 
-fn try_read_as_f64(path: &PathBuf) -> Result<Array3<f32>, Box<dyn std::error::Error + Send + Sync>> {
+fn try_read_as_f64(
+    path: &PathBuf,
+) -> Result<Array3<f32>, Box<dyn std::error::Error + Send + Sync>> {
     let file = std::fs::File::open(path)?;
     let array: Array3<f64> = cog3pio::io::geotiff::read_geotiff(file)?;
     Ok(array.mapv(|x| x as f32))
 }
 
 /// Try reading with explicit LZW support using cog3pio's CogReader for better control
-fn try_read_with_cog3pio_reader(path: &PathBuf) -> Result<Array3<f32>, Box<dyn std::error::Error + Send + Sync>> {
-    println!("Attempting to read COG with dedicated cog3pio reader (better LZW support): {}", path.display());
+fn try_read_with_cog3pio_reader(
+    path: &PathBuf,
+) -> Result<Array3<f32>, Box<dyn std::error::Error + Send + Sync>> {
+    println!(
+        "Attempting to read COG with dedicated cog3pio reader (better LZW support): {}",
+        path.display()
+    );
 
     // The key insight is that cog3pio already has LZW support enabled in its tiff dependency
     // So we just need to use the standard read_geotiff function but with better error handling
@@ -438,23 +452,23 @@ pub fn world_to_pixel(world_coord: Coord<f64>, transform: &AffineTransform<f64>)
             let x = inv.a() * world_coord.x + inv.b() * world_coord.y + inv.xoff();
             let y = inv.d() * world_coord.x + inv.e() * world_coord.y + inv.yoff();
             Coord { x, y }
-        },
+        }
         None => Coord { x: 0.0, y: 0.0 }, // fallback
     }
 }
 
 /// Extract tile region from the full array
 fn extract_tile_region(
-    array: &Arc<Array3<f32>>,
+    source: &dyn RasterSource,
     transform: &AffineTransform<f64>,
     extent_3857: &GeometryExtent,
     source_extent_3857: &GeometryExtent,
     tile_size: (usize, usize),
 ) -> Result<Vec<f32>, Box<dyn std::error::Error + Send + Sync>> {
-    let (_bands, height, width) = array.dim();
+    let height = source.height();
+    let width = source.width();
     let (tile_size_x, tile_size_y) = tile_size;
 
-  
     // Calculate pixel resolution for the target tile
     let res_x = (extent_3857.maxx - extent_3857.minx) / (tile_size_x as f64);
     let res_y = (extent_3857.maxy - extent_3857.miny) / (tile_size_y as f64);
@@ -468,11 +482,17 @@ fn extract_tile_region(
             // Convert pixel coordinates to world coordinates
             let world_x = extent_3857.minx + (x as f64) * res_x;
             let world_y = extent_3857.maxy - (y as f64) * res_y;
-            let world_coord = Coord { x: world_x, y: world_y };
+            let world_coord = Coord {
+                x: world_x,
+                y: world_y,
+            };
 
             // Check if world coordinate is within source extent
-            if world_x < source_extent_3857.minx || world_x > source_extent_3857.maxx ||
-               world_y < source_extent_3857.miny || world_y > source_extent_3857.maxy {
+            if world_x < source_extent_3857.minx
+                || world_x > source_extent_3857.maxx
+                || world_y < source_extent_3857.miny
+                || world_y > source_extent_3857.maxy
+            {
                 continue; // Leave as NaN
             }
 
@@ -483,12 +503,12 @@ fn extract_tile_region(
 
             // Check if source pixel is within array bounds
             if src_x >= 0 && src_x < width as isize && src_y >= 0 && src_y < height as isize {
-                // Use nearest neighbor sampling
-                let pixel_value = array[[0, src_y as usize, src_x as usize]];
-                if !pixel_value.is_nan() {
-                    valid_pixels += 1;
+                if let Some(pixel_value) = source.sample(0, src_x as usize, src_y as usize) {
+                    if !pixel_value.is_nan() {
+                        valid_pixels += 1;
+                    }
+                    pixel_data[y * tile_size_x + x] = pixel_value;
                 }
-                pixel_data[y * tile_size_x + x] = pixel_value;
             }
         }
     }
@@ -502,14 +522,15 @@ fn extract_tile_region(
 
         for y in 0..tile_size_y {
             for x in 0..tile_size_x {
-                let src_x = (center_x - sample_size/2 + x.min(sample_size-1)) as usize;
-                let src_y = (center_y - sample_size/2 + y.min(sample_size-1)) as usize;
+                let src_x = (center_x - sample_size / 2 + x.min(sample_size - 1)) as usize;
+                let src_y = (center_y - sample_size / 2 + y.min(sample_size - 1)) as usize;
 
                 if src_x < width && src_y < height {
-                    let pixel_value = array[[0, src_y, src_x]];
-                    pixel_data[y * tile_size_x + x] = pixel_value;
-                    if !pixel_value.is_nan() {
-                        valid_pixels += 1;
+                    if let Some(pixel_value) = source.sample(0, src_x, src_y) {
+                        pixel_data[y * tile_size_x + x] = pixel_value;
+                        if !pixel_value.is_nan() {
+                            valid_pixels += 1;
+                        }
                     }
                 }
             }
@@ -529,8 +550,7 @@ pub async fn process_cog(
         let (tile_size_x, tile_size_y) = tile_size;
 
         // 1. Load COG data using cog3pio (with caching)
-        let (array, transform) = load_cog_data(&input_path)?;
-        let (_bands, _height, _width) = array.dim();
+        let (source, transform) = load_cog_data(&input_path)?;
 
         // For now, assume the layer is in Web Mercator (EPSG:3857)
         // In a real implementation, we'd need to extract the actual CRS from the GeoTIFF
@@ -547,7 +567,7 @@ pub async fn process_cog(
 
         // 2. Extract tile region from the array
         let pixel_data = extract_tile_region(
-            &array,
+            source.as_ref(),
             &transform, // Use the actual transform from cog3pio
             &extent_3857,
             &source_extent_3857,
@@ -557,7 +577,6 @@ pub async fn process_cog(
         // 3. Apply styling logic (same as original GDAL implementation)
         let mut img = RgbaImage::new(tile_size_x as u32, tile_size_y as u32);
 
-        
         if let Some(grad) = get_builtin_gradient(&layer_obj.style) {
             // Use the gradient to colourise the image
             for (i, &raw) in pixel_data.iter().enumerate() {
@@ -625,16 +644,16 @@ pub async fn process_cog(
 
         // 4. Encode to PNG
         let mut png_data = Vec::new();
-        PngEncoder::new(Cursor::new(&mut png_data))
-            .write_image(
-                img.as_raw(),
-                tile_size_x as u32,
-                tile_size_y as u32,
-                ColorType::Rgba8.into(),
-            )?;
+        PngEncoder::new(Cursor::new(&mut png_data)).write_image(
+            img.as_raw(),
+            tile_size_x as u32,
+            tile_size_y as u32,
+            ColorType::Rgba8.into(),
+        )?;
 
         Ok(png_data)
-    }).await?
+    })
+    .await?
 }
 
 #[cfg(test)]
