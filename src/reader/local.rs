@@ -194,28 +194,9 @@ impl LocalTileReader {
         let is_cog = true; // Assume COG for now
         let auth_code = 3857; // Default to Web Mercator
 
-        let (min_value, max_value) = if let Some(array) = raster.as_array() {
-            let mut min = f32::INFINITY;
-            let mut max = f32::NEG_INFINITY;
-
-            for &val in array.iter() {
-                if !val.is_nan() {
-                    min = min.min(val);
-                    max = max.max(val);
-                }
-            }
-
-            if min.is_infinite() || max.is_infinite() {
-                (0.0, 1.0)
-            } else {
-                (min, max)
-            }
-        } else if let Some(lzw) = raster.as_lzw() {
-            lzw.compute_min_max()
-                .map_err(|e| anyhow::anyhow!("Failed to compute LZW min/max: {}", e))?
-        } else {
-            (0.0, 1.0)
-        };
+        let (min_value, max_value) = raster
+            .compute_min_max()
+            .map_err(|e| anyhow::anyhow!("Failed to compute raster min/max: {}", e))?;
 
         let last_modified = entry
             .metadata()

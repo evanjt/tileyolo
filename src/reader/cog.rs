@@ -2,6 +2,8 @@ use crate::models::geometry::GeometryExtent;
 use crate::models::layer::Layer;
 use crate::reader::lzw_fallback::LzwRasterSource;
 use crate::reader::raster::{ArrayRasterSource, RasterSource};
+use crate::reader::tiff_chunked::TiffChunkedRasterSource;
+use crate::reader::tiff_utils::{AnyResult, read_primary_compression};
 use crate::utils::style::get_builtin_gradient;
 use geo::{AffineTransform, Coord};
 use image::{ColorType, ImageEncoder, Rgba, RgbaImage, codecs::png::PngEncoder};
@@ -43,6 +45,7 @@ fn is_nodata(val: f32) -> bool {
 
 pub enum RasterReadResult {
     Array(Array3<f32>),
+    Chunked(TiffChunkedRasterSource),
     Lzw(LzwRasterSource),
 }
 
@@ -50,6 +53,7 @@ impl RasterReadResult {
     pub fn dimensions(&self) -> (usize, usize, usize) {
         match self {
             RasterReadResult::Array(array) => array.dim(),
+            RasterReadResult::Chunked(source) => (source.bands(), source.height(), source.width()),
             RasterReadResult::Lzw(source) => (source.bands(), source.height(), source.width()),
         }
     }
@@ -57,6 +61,7 @@ impl RasterReadResult {
     fn geo_tags(&self) -> (Option<[f64; 3]>, Option<[f64; 6]>) {
         match self {
             RasterReadResult::Array(_) => (None, None),
+            RasterReadResult::Chunked(source) => (source.pixel_scale(), source.tiepoint()),
             RasterReadResult::Lzw(source) => (source.pixel_scale(), source.tiepoint()),
         }
     }
@@ -67,6 +72,7 @@ impl RasterReadResult {
                 let arc_array = Arc::new(array);
                 Arc::new(ArrayRasterSource::new(arc_array))
             }
+            RasterReadResult::Chunked(source) => Arc::new(source),
             RasterReadResult::Lzw(source) => Arc::new(source),
         }
     }
@@ -78,10 +84,44 @@ impl RasterReadResult {
         }
     }
 
+    pub fn as_chunked(&self) -> Option<&TiffChunkedRasterSource> {
+        match self {
+            RasterReadResult::Chunked(source) => Some(source),
+            _ => None,
+        }
+    }
+
     pub fn as_lzw(&self) -> Option<&LzwRasterSource> {
         match self {
             RasterReadResult::Lzw(source) => Some(source),
             _ => None,
+        }
+    }
+
+    pub fn compute_min_max(&self) -> AnyResult<(f32, f32)> {
+        match self {
+            RasterReadResult::Array(array) => {
+                let mut min = f32::INFINITY;
+                let mut max = f32::NEG_INFINITY;
+                for &val in array.iter() {
+                    if val.is_nan() {
+                        continue;
+                    }
+                    if val < min {
+                        min = val;
+                    }
+                    if val > max {
+                        max = val;
+                    }
+                }
+                if min.is_infinite() || max.is_infinite() {
+                    Ok((0.0, 0.0))
+                } else {
+                    Ok((min, max))
+                }
+            }
+            RasterReadResult::Chunked(source) => source.compute_min_max(),
+            RasterReadResult::Lzw(source) => source.compute_min_max(),
         }
     }
 }
@@ -268,14 +308,30 @@ pub fn try_read_geotiff_with_flexible_type(
         }
     }
 
-    println!("Trying LZW fallback first to avoid full image reads for problematic files...");
-    match crate::reader::lzw_fallback::try_read_lzw_tiff_fallback(path) {
-        Ok(lzw_source) => {
+    let compression = match read_primary_compression(path) {
+        Ok(value) => value,
+        Err(e) => {
+            println!(
+                "WARN: Could not read compression tag for {}: {}",
+                path.display(),
+                e
+            );
+            None
+        }
+    };
+
+    if compression == Some(5) {
+        println!("Detected LZW compression; using streamed fallbacks...");
+
+        if let Ok(lzw_source) = crate::reader::lzw_fallback::try_read_lzw_tiff_fallback(path) {
             println!("Successfully initialized streamed LZW reader");
             return Ok(RasterReadResult::Lzw(lzw_source));
         }
-        Err(e) => {
-            println!("LZW fallback initialization failed: {}", e);
+
+        println!("LZW fallback failed, attempting chunked reader...");
+        if let Ok(chunked_source) = TiffChunkedRasterSource::open(path) {
+            println!("Successfully initialized chunked TIFF reader");
+            return Ok(RasterReadResult::Chunked(chunked_source));
         }
     }
 
@@ -321,10 +377,16 @@ pub fn try_read_geotiff_with_flexible_type(
         || last_error.contains("LZW")
         || last_error.contains("unsupported")
     {
-        println!("Retrying LZW fallback as a last resort...");
-        if let Ok(lzw_source) = crate::reader::lzw_fallback::try_read_lzw_tiff_fallback(path) {
-            println!("Successfully initialized streamed LZW reader on retry");
-            return Ok(RasterReadResult::Lzw(lzw_source));
+        if compression == Some(5) {
+            println!("Retrying LZW/chunked fallbacks...");
+            if let Ok(lzw_source) = crate::reader::lzw_fallback::try_read_lzw_tiff_fallback(path) {
+                println!("Successfully initialized streamed LZW reader on retry");
+                return Ok(RasterReadResult::Lzw(lzw_source));
+            }
+            if let Ok(chunked_source) = TiffChunkedRasterSource::open(path) {
+                println!("Successfully initialized chunked TIFF reader on retry");
+                return Ok(RasterReadResult::Chunked(chunked_source));
+            }
         }
     }
 

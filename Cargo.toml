@@ -44,6 +44,7 @@ url = "2.5.7"
 object_store = { version = "0.12.3", features = ["http"] }
 proj = "0.30.0"
 tiny_tiff = "0.5.2"
+tiff = { version = "0.10.3", features = ["lzw", "deflate"], default-features = false }
 
 [dev-dependencies]
 rand = "0.9.1"

@@ -2905,6 +2905,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "tiff 0.10.3",
  "tiny_tiff",
  "tokio",
  "tower",

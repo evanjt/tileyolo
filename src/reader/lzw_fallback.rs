@@ -1,46 +1,20 @@
 //! Fallback LZW TIFF reader that streams tiles on demand.
 
 use crate::reader::raster::RasterSource;
+use crate::reader::tiff_utils::{
+    AnyResult, TAG_BITS_PER_SAMPLE, TAG_COMPRESSION, TAG_GDAL_METADATA, TAG_IMAGE_LENGTH,
+    TAG_IMAGE_WIDTH, TAG_MODEL_PIXEL_SCALE, TAG_MODEL_TIEPOINT, TAG_PLANAR_CONFIGURATION,
+    TAG_PREDICTOR, TAG_ROWS_PER_STRIP, TAG_SAMPLE_FORMAT, TAG_SAMPLES_PER_PIXEL,
+    TAG_STRIP_BYTE_COUNTS, TAG_STRIP_OFFSETS, TAG_TILE_BYTE_COUNTS, TAG_TILE_LENGTH,
+    TAG_TILE_OFFSETS, TAG_TILE_WIDTH, parse_gdal_metadata_stats, read_ifd, read_tag_f64_six,
+    read_tag_f64_triplet, read_tag_string_from_ifd, read_tag_u32, read_tag_u32_vec,
+    read_tag_u32_vec_optional, read_tiff_header,
+};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-
-type AnyResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
-
-const TAG_IMAGE_WIDTH: u16 = 256;
-const TAG_IMAGE_LENGTH: u16 = 257;
-const TAG_BITS_PER_SAMPLE: u16 = 258;
-const TAG_COMPRESSION: u16 = 259;
-const TAG_STRIP_OFFSETS: u16 = 273;
-const TAG_SAMPLES_PER_PIXEL: u16 = 277;
-const TAG_ROWS_PER_STRIP: u16 = 278;
-const TAG_STRIP_BYTE_COUNTS: u16 = 279;
-const TAG_PLANAR_CONFIGURATION: u16 = 284;
-const TAG_PREDICTOR: u16 = 317;
-const TAG_TILE_WIDTH: u16 = 322;
-const TAG_TILE_LENGTH: u16 = 323;
-const TAG_TILE_OFFSETS: u16 = 324;
-const TAG_TILE_BYTE_COUNTS: u16 = 325;
-const TAG_SAMPLE_FORMAT: u16 = 339;
-const TAG_MODEL_PIXEL_SCALE: u16 = 33550;
-const TAG_MODEL_TIEPOINT: u16 = 33922;
-
-#[derive(Debug)]
-struct TiffHeader {
-    little_endian: bool,
-    first_ifd_offset: u32,
-}
-
-#[derive(Debug)]
-struct IfdEntry {
-    tag: u16,
-    field_type: u16,
-    count: u32,
-    value_offset: u32,
-    raw_value_bytes: [u8; 4],
-}
 
 /// Streamed LZW raster source backed by on-demand tile decoding.
 pub struct LzwRasterSource {
@@ -59,6 +33,7 @@ pub struct LzwRasterSource {
     cache: Mutex<HashMap<usize, Arc<Vec<f32>>>>,
     model_pixel_scale: Option<[f64; 3]>,
     model_tiepoint: Option<[f64; 6]>,
+    min_max: Mutex<Option<(f32, f32)>>,
 }
 
 impl LzwRasterSource {
@@ -295,6 +270,15 @@ impl LzwRasterSource {
             header.little_endian,
         )?;
 
+        let metadata_stats = read_tag_string_from_ifd(
+            &mut file,
+            &ifd_entries,
+            header.little_endian,
+            TAG_GDAL_METADATA,
+        )
+        .ok()
+        .and_then(|s| parse_gdal_metadata_stats(&s));
+
         Ok(Self {
             path: path.clone(),
             image_width,
@@ -311,6 +295,7 @@ impl LzwRasterSource {
             cache: Mutex::new(HashMap::new()),
             model_pixel_scale,
             model_tiepoint,
+            min_max: Mutex::new(metadata_stats),
         })
     }
 
@@ -323,6 +308,10 @@ impl LzwRasterSource {
     }
 
     pub fn compute_min_max(&self) -> AnyResult<(f32, f32)> {
+        if let Some(result) = *self.min_max.lock().unwrap() {
+            return Ok(result);
+        }
+
         let mut min_value = f32::INFINITY;
         let mut max_value = f32::NEG_INFINITY;
 
@@ -345,11 +334,14 @@ impl LzwRasterSource {
             }
         }
 
-        if min_value == f32::INFINITY || max_value == f32::NEG_INFINITY {
-            Ok((0.0, 0.0))
+        let result = if min_value == f32::INFINITY || max_value == f32::NEG_INFINITY {
+            (0.0, 0.0)
         } else {
-            Ok((min_value, max_value))
-        }
+            (min_value, max_value)
+        };
+
+        *self.min_max.lock().unwrap() = Some(result);
+        Ok(result)
     }
 
     fn fetch_tile(&self, tile_index: usize) -> AnyResult<Arc<Vec<f32>>> {
@@ -456,297 +448,6 @@ impl RasterSource for LzwRasterSource {
 
 pub fn try_read_lzw_tiff_fallback(path: &PathBuf) -> AnyResult<LzwRasterSource> {
     LzwRasterSource::open(path)
-}
-
-fn read_tiff_header(file: &mut File) -> AnyResult<TiffHeader> {
-    let mut header_bytes = [0u8; 8];
-    file.read_exact(&mut header_bytes)?;
-
-    let little_endian = match &header_bytes[0..2] {
-        b"II" => true,
-        b"MM" => false,
-        _ => return Err("Invalid TIFF signature".into()),
-    };
-
-    let version = if little_endian {
-        u16::from_le_bytes([header_bytes[2], header_bytes[3]])
-    } else {
-        u16::from_be_bytes([header_bytes[2], header_bytes[3]])
-    };
-
-    if version != 42 {
-        return Err("Invalid TIFF version".into());
-    }
-
-    let first_ifd_offset = if little_endian {
-        u32::from_le_bytes([
-            header_bytes[4],
-            header_bytes[5],
-            header_bytes[6],
-            header_bytes[7],
-        ])
-    } else {
-        u32::from_be_bytes([
-            header_bytes[4],
-            header_bytes[5],
-            header_bytes[6],
-            header_bytes[7],
-        ])
-    };
-
-    Ok(TiffHeader {
-        little_endian,
-        first_ifd_offset,
-    })
-}
-
-fn read_ifd(file: &mut File, little_endian: bool) -> AnyResult<Vec<IfdEntry>> {
-    let mut entry_count_bytes = [0u8; 2];
-    file.read_exact(&mut entry_count_bytes)?;
-    let entry_count = if little_endian {
-        u16::from_le_bytes(entry_count_bytes)
-    } else {
-        u16::from_be_bytes(entry_count_bytes)
-    };
-
-    let mut entries = Vec::with_capacity(entry_count as usize);
-
-    for _ in 0..entry_count {
-        let mut entry_bytes = [0u8; 12];
-        file.read_exact(&mut entry_bytes)?;
-
-        let tag = if little_endian {
-            u16::from_le_bytes([entry_bytes[0], entry_bytes[1]])
-        } else {
-            u16::from_be_bytes([entry_bytes[0], entry_bytes[1]])
-        };
-
-        let field_type = if little_endian {
-            u16::from_le_bytes([entry_bytes[2], entry_bytes[3]])
-        } else {
-            u16::from_be_bytes([entry_bytes[2], entry_bytes[3]])
-        };
-
-        let count = if little_endian {
-            u32::from_le_bytes([
-                entry_bytes[4],
-                entry_bytes[5],
-                entry_bytes[6],
-                entry_bytes[7],
-            ])
-        } else {
-            u32::from_be_bytes([
-                entry_bytes[4],
-                entry_bytes[5],
-                entry_bytes[6],
-                entry_bytes[7],
-            ])
-        };
-
-        let raw_value_bytes = [
-            entry_bytes[8],
-            entry_bytes[9],
-            entry_bytes[10],
-            entry_bytes[11],
-        ];
-
-        let value_offset = if little_endian {
-            u32::from_le_bytes(raw_value_bytes)
-        } else {
-            u32::from_be_bytes(raw_value_bytes)
-        };
-
-        entries.push(IfdEntry {
-            tag,
-            field_type,
-            count,
-            value_offset,
-            raw_value_bytes,
-        });
-    }
-
-    Ok(entries)
-}
-
-fn get_entry<'a>(entries: &'a [IfdEntry], tag: u16) -> Option<&'a IfdEntry> {
-    entries.iter().find(|entry| entry.tag == tag)
-}
-
-fn read_entry_values_u32(
-    file: &mut File,
-    entry: &IfdEntry,
-    little_endian: bool,
-) -> AnyResult<Vec<u32>> {
-    let type_size = match entry.field_type {
-        3 => 2,
-        4 => 4,
-        _ => {
-            return Err(format!(
-                "Unsupported field type {} for u32 conversion",
-                entry.field_type
-            )
-            .into());
-        }
-    };
-
-    let total_bytes = entry.count as usize * type_size;
-    let mut raw_bytes = vec![0u8; total_bytes];
-
-    if total_bytes <= 4 {
-        if little_endian {
-            raw_bytes.copy_from_slice(&entry.raw_value_bytes[..total_bytes]);
-        } else {
-            let start = 4 - total_bytes;
-            raw_bytes.copy_from_slice(&entry.raw_value_bytes[start..]);
-        }
-    } else {
-        let current_pos = file.stream_position()?;
-        file.seek(SeekFrom::Start(entry.value_offset as u64))?;
-        file.read_exact(&mut raw_bytes)?;
-        file.seek(SeekFrom::Start(current_pos))?;
-    }
-
-    let mut values = Vec::with_capacity(entry.count as usize);
-    for chunk in raw_bytes.chunks_exact(type_size) {
-        let value = match entry.field_type {
-            3 => {
-                if little_endian {
-                    u16::from_le_bytes([chunk[0], chunk[1]]) as u32
-                } else {
-                    u16::from_be_bytes([chunk[0], chunk[1]]) as u32
-                }
-            }
-            4 => {
-                if little_endian {
-                    u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]])
-                } else {
-                    u32::from_be_bytes([chunk[0], chunk[1], chunk[2], chunk[3]])
-                }
-            }
-            _ => unreachable!(),
-        };
-        values.push(value);
-    }
-
-    Ok(values)
-}
-
-fn read_entry_values_f64(
-    file: &mut File,
-    entry: &IfdEntry,
-    little_endian: bool,
-) -> AnyResult<Vec<f64>> {
-    if entry.field_type != 12 {
-        return Err(format!(
-            "Unsupported field type {} for f64 conversion",
-            entry.field_type
-        )
-        .into());
-    }
-
-    let total_bytes = entry.count as usize * 8;
-    let mut raw_bytes = vec![0u8; total_bytes];
-
-    if total_bytes <= 4 {
-        return Err("Unexpected inline storage for double precision data".into());
-    }
-
-    let current_pos = file.stream_position()?;
-    file.seek(SeekFrom::Start(entry.value_offset as u64))?;
-    file.read_exact(&mut raw_bytes)?;
-    file.seek(SeekFrom::Start(current_pos))?;
-
-    let mut values = Vec::with_capacity(entry.count as usize);
-    for chunk in raw_bytes.chunks_exact(8) {
-        let value = if little_endian {
-            f64::from_le_bytes([
-                chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7],
-            ])
-        } else {
-            f64::from_be_bytes([
-                chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7],
-            ])
-        };
-        values.push(value);
-    }
-
-    Ok(values)
-}
-
-fn read_tag_u32(
-    file: &mut File,
-    entries: &[IfdEntry],
-    tag: u16,
-    little_endian: bool,
-) -> AnyResult<u32> {
-    let entry = get_entry(entries, tag).ok_or_else(|| format!("Tag {} not found", tag))?;
-    let values = read_entry_values_u32(file, entry, little_endian)?;
-    values
-        .get(0)
-        .copied()
-        .ok_or_else(|| format!("Tag {} missing value", tag).into())
-}
-
-fn read_tag_u32_vec(
-    file: &mut File,
-    entries: &[IfdEntry],
-    tag: u16,
-    little_endian: bool,
-) -> AnyResult<Vec<u32>> {
-    let entry = get_entry(entries, tag).ok_or_else(|| format!("Tag {} not found", tag))?;
-    read_entry_values_u32(file, entry, little_endian)
-}
-
-fn read_tag_u32_vec_optional(
-    file: &mut File,
-    entries: &[IfdEntry],
-    tag: u16,
-    little_endian: bool,
-) -> AnyResult<Option<Vec<u32>>> {
-    Ok(match get_entry(entries, tag) {
-        Some(entry) => Some(read_entry_values_u32(file, entry, little_endian)?),
-        None => None,
-    })
-}
-
-fn read_tag_f64_triplet(
-    file: &mut File,
-    entries: &[IfdEntry],
-    tag: u16,
-    little_endian: bool,
-) -> AnyResult<Option<[f64; 3]>> {
-    let entry = match get_entry(entries, tag) {
-        Some(entry) => entry,
-        None => return Ok(None),
-    };
-
-    let values = read_entry_values_f64(file, entry, little_endian)?;
-    if values.len() >= 3 {
-        Ok(Some([values[0], values[1], values[2]]))
-    } else {
-        Ok(None)
-    }
-}
-
-fn read_tag_f64_six(
-    file: &mut File,
-    entries: &[IfdEntry],
-    tag: u16,
-    little_endian: bool,
-) -> AnyResult<Option<[f64; 6]>> {
-    let entry = match get_entry(entries, tag) {
-        Some(entry) => entry,
-        None => return Ok(None),
-    };
-
-    let values = read_entry_values_f64(file, entry, little_endian)?;
-    if values.len() >= 6 {
-        Ok(Some([
-            values[0], values[1], values[2], values[3], values[4], values[5],
-        ]))
-    } else {
-        Ok(None)
-    }
 }
 
 fn try_lzw_decompress(compressed: &[u8], expected_bytes: usize) -> AnyResult<(Vec<u8>, usize)> {
