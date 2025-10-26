@@ -1,3 +1,7 @@
 /target
 /data
 /ignore
+*.md
+*.tif
+*.tiff
+*.png
