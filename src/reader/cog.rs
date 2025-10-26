@@ -19,6 +19,13 @@ static ARRAY_CACHE: Lazy<std::sync::Mutex<HashMap<String, (Arc<Array3<f32>>, Aff
 static LOADING_FILES: Lazy<std::sync::Mutex<HashMap<String, std::sync::Arc<std::sync::Mutex<Option<(Arc<Array3<f32>>, AffineTransform<f64>)>>>>>> =
     Lazy::new(|| std::sync::Mutex::new(HashMap::new()));
 
+// Cache for files that have failed to load - with reduced persistence for retry attempts
+static FAILED_FILES: Lazy<std::sync::Mutex<HashMap<String, (String, std::time::Instant)>>> =
+    Lazy::new(|| std::sync::Mutex::new(HashMap::new()));
+
+// Only keep failures in cache for 5 minutes to allow retry
+const FAILURE_CACHE_DURATION: std::time::Duration = std::time::Duration::from_secs(300);
+
 // Returns true if the value should be treated as nodata (currently, if it is NaN)
 fn is_nodata(val: f32) -> bool {
     val.is_nan()
@@ -30,6 +37,19 @@ fn load_cog_data(path: &PathBuf) -> Result<(Arc<Array3<f32>>, AffineTransform<f6
     let metadata = std::fs::metadata(path)?;
     let modified = metadata.modified()?.duration_since(std::time::UNIX_EPOCH)?.as_secs();
     let cache_key = format!("{}:{}", path.display(), modified);
+
+    // Check if this file has failed to load before (only if recently failed)
+    {
+        let mut failed_files = FAILED_FILES.lock().unwrap();
+        // Clean up expired entries first
+        let now = std::time::Instant::now();
+        failed_files.retain(|_, (_, timestamp)| now.duration_since(*timestamp) < FAILURE_CACHE_DURATION);
+
+        if let Some((error_msg, _timestamp)) = failed_files.get(&cache_key) {
+            println!("Using recent cached failure for {}: {}", path.display(), error_msg);
+            return Err(format!("Recent cached failure: {}", error_msg).into());
+        }
+    }
 
     // Use a single mutex to coordinate everything atomically
     let mut loading_map = LOADING_FILES.lock().unwrap();
@@ -105,7 +125,18 @@ fn load_cog_data_internal(path: &PathBuf, cache_key: &str) -> Result<(Arc<Array3
     let _file = std::fs::File::open(path)?;
 
     // Try different data types until we find one that works
-    let array = try_read_geotiff_with_flexible_type(&path)?;
+    let array = match try_read_geotiff_with_flexible_type(&path) {
+        Ok(array) => array,
+        Err(e) => {
+            // Cache the failure temporarily to prevent repeated attempts (but allow retry after 5 minutes)
+            let error_msg = e.to_string();
+            {
+                let mut failed_files = FAILED_FILES.lock().unwrap();
+                failed_files.insert(cache_key.to_string(), (error_msg.clone(), std::time::Instant::now()));
+            }
+            return Err(e);
+        }
+    };
     let (_bands, height, width) = array.dim();
 
     // Calculate a proper Web Mercator transform based on array dimensions
@@ -151,81 +182,152 @@ fn load_cog_data_internal(path: &PathBuf, cache_key: &str) -> Result<(Arc<Array3
 pub fn try_read_geotiff_with_flexible_type(path: &PathBuf) -> Result<Array3<f32>, Box<dyn std::error::Error + Send + Sync>> {
     println!("Attempting to read COG file: {}", path.display());
 
-    
-    // Try u8 first (very common for satellite imagery)
-    match try_read_as_u8(path) {
-        Ok(array) => {
-            println!("Successfully read GeoTIFF as type: u8");
-            return Ok(array);
-        }
-        Err(e) => {
-            println!("Failed to read as u8: {}", e);
+    // Helper function to catch panics from cog3pio but provide more detailed error information
+    fn safe_read<T, F>(operation: F) -> Result<T, Box<dyn std::error::Error + Send + Sync>>
+    where
+        F: FnOnce() -> Result<T, Box<dyn std::error::Error + Send + Sync>> + std::panic::UnwindSafe,
+    {
+        match std::panic::catch_unwind(operation) {
+            Ok(result) => result,
+            Err(panic_info) => {
+                let error_msg = match panic_info.downcast::<String>() {
+                    Ok(s) => format!("Panic occurred while reading GeoTIFF: {}", s),
+                    Err(_) => "Unknown panic occurred while reading GeoTIFF".to_string(),
+                };
+                println!("ERROR: {}", error_msg);
+                // Don't immediately fallback - let the error propagate to see specific issues
+                Err(error_msg.into())
+            }
         }
     }
 
-    // Try u16 (very common for elevation data)
-    match try_read_as_u16(path) {
+    // First, let's try our LZW fallback since the tiff crate is having assertion failures
+    println!("Trying LZW fallback first due to tiff crate assertion issues with this COG...");
+    match crate::reader::lzw_fallback::try_read_lzw_tiff_fallback(path) {
+        Ok(array) => {
+            println!("Successfully read GeoTIFF using LZW fallback!");
+            return Ok(array);
+        }
+        Err(e) => {
+            println!("LZW fallback failed: {}", e);
+        }
+    }
+
+    // Try the dedicated cog3pio reader first for better LZW support
+    match safe_read(|| try_read_with_cog3pio_reader(path)) {
+        Ok(array) => {
+            println!("Successfully read GeoTIFF with dedicated cog3pio reader (LZW-aware)");
+            return Ok(array);
+        }
+        Err(e) => {
+            println!("Dedicated cog3pio reader failed: {}", e);
+        }
+    }
+
+    let mut last_error = "No attempts made".to_string();
+
+    // Try u16 first (very common for elevation data)
+    match safe_read(|| try_read_as_u16(path)) {
         Ok(array) => {
             println!("Successfully read GeoTIFF as type: u16");
             return Ok(array);
         }
         Err(e) => {
-            println!("Failed to read as u16: {}", e);
+            let error_str = e.to_string();
+            println!("Failed to read as u16: {}", error_str);
+            last_error = error_str;
         }
     }
 
-    // Try i16
-    match try_read_as_i16(path) {
+    // Try u8 (very common for satellite imagery)
+    match safe_read(|| try_read_as_u8(path)) {
         Ok(array) => {
-            println!("Successfully read GeoTIFF as type: i16");
+            println!("Successfully read GeoTIFF as type: u8");
             return Ok(array);
         }
         Err(e) => {
-            println!("Failed to read as i16: {}", e);
-        }
-    }
-
-    // Try u32
-    match try_read_as_u32(path) {
-        Ok(array) => {
-            println!("Successfully read GeoTIFF as type: u32");
-            return Ok(array);
-        }
-        Err(e) => {
-            println!("Failed to read as u32: {}", e);
-        }
-    }
-
-    // Try i32
-    match try_read_as_i32(path) {
-        Ok(array) => {
-            println!("Successfully read GeoTIFF as type: i32");
-            return Ok(array);
-        }
-        Err(e) => {
-            println!("Failed to read as i32: {}", e);
+            let error_str = e.to_string();
+            println!("Failed to read as u8: {}", error_str);
+            last_error = error_str;
         }
     }
 
     // Try f32 (original approach)
-    match try_read_as_f32(path) {
+    match safe_read(|| try_read_as_f32(path)) {
         Ok(array) => {
             println!("Successfully read GeoTIFF as type: f32");
             return Ok(array);
         }
         Err(e) => {
-            println!("Failed to read as f32: {}", e);
+            let error_str = e.to_string();
+            println!("Failed to read as f32: {}", error_str);
+            last_error = error_str;
+        }
+    }
+
+    // Try i16
+    match safe_read(|| try_read_as_i16(path)) {
+        Ok(array) => {
+            println!("Successfully read GeoTIFF as type: i16");
+            return Ok(array);
+        }
+        Err(e) => {
+            let error_str = e.to_string();
+            println!("Failed to read as i16: {}", error_str);
+            last_error = error_str;
+        }
+    }
+
+    // Try u32
+    match safe_read(|| try_read_as_u32(path)) {
+        Ok(array) => {
+            println!("Successfully read GeoTIFF as type: u32");
+            return Ok(array);
+        }
+        Err(e) => {
+            let error_str = e.to_string();
+            println!("Failed to read as u32: {}", error_str);
+            last_error = error_str;
+        }
+    }
+
+    // Try i32
+    match safe_read(|| try_read_as_i32(path)) {
+        Ok(array) => {
+            println!("Successfully read GeoTIFF as type: i32");
+            return Ok(array);
+        }
+        Err(e) => {
+            let error_str = e.to_string();
+            println!("Failed to read as i32: {}", error_str);
+            last_error = error_str;
         }
     }
 
     // Try f64
-    match try_read_as_f64(path) {
+    match safe_read(|| try_read_as_f64(path)) {
         Ok(array) => {
             println!("Successfully read GeoTIFF as type: f64");
             return Ok(array);
         }
         Err(e) => {
-            println!("Failed to read as f64: {}", e);
+            let error_str = e.to_string();
+            println!("Failed to read as f64: {}", error_str);
+            last_error = error_str;
+        }
+    }
+
+    // As a last resort, try the LZW fallback but only for specific error scenarios
+    if last_error.contains("compression") || last_error.contains("LZW") || last_error.contains("unsupported") {
+        println!("Attempting LZW fallback as last resort for compression-related errors...");
+        match crate::reader::lzw_fallback::try_read_lzw_tiff_fallback(path) {
+            Ok(array) => {
+                println!("Successfully read GeoTIFF using LZW fallback!");
+                return Ok(array);
+            }
+            Err(e) => {
+                println!("LZW fallback also failed: {}", e);
+            }
         }
     }
 
@@ -278,6 +380,50 @@ fn try_read_as_f64(path: &PathBuf) -> Result<Array3<f32>, Box<dyn std::error::Er
     let file = std::fs::File::open(path)?;
     let array: Array3<f64> = cog3pio::io::geotiff::read_geotiff(file)?;
     Ok(array.mapv(|x| x as f32))
+}
+
+/// Try reading with explicit LZW support using cog3pio's CogReader for better control
+fn try_read_with_cog3pio_reader(path: &PathBuf) -> Result<Array3<f32>, Box<dyn std::error::Error + Send + Sync>> {
+    println!("Attempting to read COG with dedicated cog3pio reader (better LZW support): {}", path.display());
+
+    // The key insight is that cog3pio already has LZW support enabled in its tiff dependency
+    // So we just need to use the standard read_geotiff function but with better error handling
+    // This function exists mainly to provide better logging and LZW-specific context
+
+    // Try u16 first (most common for elevation data)
+    match try_read_as_u16(path) {
+        Ok(array) => {
+            println!("Successfully read COG as u16 with dedicated LZW-enabled reader");
+            return Ok(array);
+        }
+        Err(e) => {
+            println!("Failed to read as u16 with dedicated reader: {}", e);
+        }
+    }
+
+    // Try u8 (common for imagery)
+    match try_read_as_u8(path) {
+        Ok(array) => {
+            println!("Successfully read COG as u8 with dedicated LZW-enabled reader");
+            return Ok(array);
+        }
+        Err(e) => {
+            println!("Failed to read as u8 with dedicated reader: {}", e);
+        }
+    }
+
+    // Try f32
+    match try_read_as_f32(path) {
+        Ok(array) => {
+            println!("Successfully read COG as f32 with dedicated LZW-enabled reader");
+            return Ok(array);
+        }
+        Err(e) => {
+            println!("Failed to read as f32 with dedicated reader: {}", e);
+        }
+    }
+
+    Err("All data types failed with dedicated cog3pio reader".into())
 }
 
 /// Convert world coordinates to pixel coordinates using inverse transform

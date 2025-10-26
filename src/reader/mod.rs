@@ -1,4 +1,5 @@
 pub mod cog;
+pub mod lzw_fallback;
 pub mod local;
 pub mod metadata;
 pub mod s3;

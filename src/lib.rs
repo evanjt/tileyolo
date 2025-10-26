@@ -7,6 +7,9 @@ mod utils;
 pub mod endpoints;
 pub mod reader;
 
+#[cfg(test)]
+mod test_lzw_mod;
+
 // #[cfg(test)]
 // mod test_utils; // TODO: Update to use cog3pio instead of GDAL
 

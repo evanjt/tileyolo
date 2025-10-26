@@ -1559,6 +1559,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
+name = "lzw"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7d947cbb889ed21c2a84be6ffbaebf5b4e0f4340638cba0444907e38b56be084"
+
+[[package]]
 name = "matchit"
 version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2151,7 +2157,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.59.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -2501,6 +2507,12 @@ name = "ryu"
 version = "1.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "28d3b2b1366ec20994f1fd18c3c594f05c5dd4bc44d8bb0c1c632c8d6829481f"
+
+[[package]]
+name = "salzweg"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "29a9ec85db1460d952e6556b945c1f3e287ddb44b79d6d72171daac24d4950d2"
 
 [[package]]
 name = "same-file"
@@ -2883,20 +2895,32 @@ dependencies = [
  "geo",
  "image",
  "indicatif",
+ "lzw",
  "ndarray",
  "object_store",
  "once_cell",
  "proj",
  "rand 0.9.1",
+ "salzweg",
  "serde",
  "serde_json",
  "tempfile",
+ "tiny_tiff",
  "tokio",
  "tower",
  "tower-http",
  "url",
  "walkdir",
  "weezl",
+]
+
+[[package]]
+name = "tiny_tiff"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "97d8bccec30c4faa12c329e8a1b451f0b9a8c545355ac0a8831e8c0a5c45ba7a"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

@@ -32,6 +32,8 @@ once_cell = "1.19.0"
 ndarray = "0.16.1"
 colorgrad = "0.7.1"
 weezl = "0.1.10"
+lzw = "0.10.0"
+salzweg = "0.1.4"
 clap = { version = "4.5.37", features = ["derive"] }
 tower-http = { version = "0.6.1", features = ["fs"] }
 serde = { version = "1.0.219", features = ["derive"] }
@@ -41,6 +43,7 @@ bytes = "1.5.0"
 url = "2.5.7"
 object_store = { version = "0.12.3", features = ["http"] }
 proj = "0.30.0"
+tiny_tiff = "0.5.2"
 
 [dev-dependencies]
 rand = "0.9.1"
