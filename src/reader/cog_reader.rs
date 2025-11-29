@@ -524,39 +524,102 @@ impl CogReader {
     }
 
     /// Estimate min/max from sampling (when GDAL stats not available)
-    /// Only reads a few tiles instead of the entire image
+    ///
+    /// For local files: Scans ALL tiles for accurate min/max values
+    /// For remote files (S3/HTTP): Samples a few tiles for efficiency
+    ///
+    /// Use `estimate_min_max_fast()` to always use fast sampling regardless of source.
     pub fn estimate_min_max(&self) -> AnyResult<(f32, f32)> {
         // First check for GDAL statistics
         if let (Some(min), Some(max)) = (self.metadata.stats_min, self.metadata.stats_max) {
             return Ok((min, max));
         }
 
-        let mut min = f32::INFINITY;
-        let mut max = f32::NEG_INFINITY;
+        // For local files, do a full scan for accuracy
+        // For remote files, use fast sampling to minimize network requests
+        if self.reader.is_local() {
+            self.estimate_min_max_full_scan()
+        } else {
+            self.estimate_min_max_fast()
+        }
+    }
 
-        // Sample corner tiles + center tile (5 tiles max instead of all)
+    /// Fast min/max estimation - samples only corner and center tiles
+    /// Use this for remote files where full scans are expensive
+    pub fn estimate_min_max_fast(&self) -> AnyResult<(f32, f32)> {
+        // First check for GDAL statistics
+        if let (Some(min), Some(max)) = (self.metadata.stats_min, self.metadata.stats_max) {
+            return Ok((min, max));
+        }
+
+        // For files with overviews, sample from the smallest overview (most efficient)
+        if !self.overviews.is_empty() {
+            let smallest_ovr_idx = self.overviews.len() - 1;
+            let ovr = &self.overviews[smallest_ovr_idx];
+            let total_tiles = ovr.tile_offsets.len();
+
+            // Sample corner tiles + center tile from smallest overview
+            let sample_indices: Vec<usize> = if total_tiles <= 5 {
+                (0..total_tiles).collect()
+            } else {
+                vec![
+                    0,
+                    ovr.tiles_across.saturating_sub(1),
+                    total_tiles / 2,
+                    total_tiles.saturating_sub(ovr.tiles_across),
+                    total_tiles.saturating_sub(1),
+                ]
+            };
+
+            return self.scan_tiles_for_minmax(&sample_indices, Some(smallest_ovr_idx));
+        }
+
+        // No overviews - sample from full resolution tiles
         let total_tiles = self.metadata.tile_offsets.len();
         let sample_indices: Vec<usize> = if total_tiles <= 5 {
             (0..total_tiles).collect()
         } else {
             vec![
                 0,                                          // Top-left
-                self.metadata.tiles_across - 1,              // Top-right
+                self.metadata.tiles_across.saturating_sub(1), // Top-right
                 total_tiles / 2,                            // Center
-                total_tiles - self.metadata.tiles_across,   // Bottom-left
-                total_tiles - 1,                            // Bottom-right
+                total_tiles.saturating_sub(self.metadata.tiles_across), // Bottom-left
+                total_tiles.saturating_sub(1),              // Bottom-right
             ]
         };
 
-        // Get nodata value if set
+        self.scan_tiles_for_minmax(&sample_indices, None)
+    }
+
+    /// Full scan min/max estimation - reads ALL tiles
+    /// Use this for local files where disk I/O is fast
+    fn estimate_min_max_full_scan(&self) -> AnyResult<(f32, f32)> {
+        // For files with overviews, scan the smallest overview (much faster)
+        if !self.overviews.is_empty() {
+            let smallest_ovr_idx = self.overviews.len() - 1;
+            let ovr = &self.overviews[smallest_ovr_idx];
+            let all_indices: Vec<usize> = (0..ovr.tile_offsets.len()).collect();
+            return self.scan_tiles_for_minmax(&all_indices, Some(smallest_ovr_idx));
+        }
+
+        // No overviews - must scan full resolution
+        let all_indices: Vec<usize> = (0..self.metadata.tile_offsets.len()).collect();
+        self.scan_tiles_for_minmax(&all_indices, None)
+    }
+
+    /// Helper to scan specific tiles for min/max values
+    fn scan_tiles_for_minmax(&self, indices: &[usize], overview_idx: Option<usize>) -> AnyResult<(f32, f32)> {
+        let mut min = f32::INFINITY;
+        let mut max = f32::NEG_INFINITY;
         let nodata = self.metadata.nodata;
 
-        for tile_idx in sample_indices {
-            if tile_idx >= total_tiles {
-                continue;
-            }
+        for &tile_idx in indices {
+            let tile_data = if let Some(ovr_idx) = overview_idx {
+                self.read_overview_tile(ovr_idx, tile_idx)?
+            } else {
+                self.read_tile(tile_idx)?
+            };
 
-            let tile_data = self.read_tile(tile_idx)?;
             for &val in &tile_data {
                 // Skip NaN and nodata values
                 if val.is_nan() {

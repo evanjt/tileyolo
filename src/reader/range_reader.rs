@@ -26,6 +26,12 @@ pub trait RangeReader: Send + Sync {
 
     /// Get a human-readable identifier for this source (for logging/errors)
     fn identifier(&self) -> &str;
+
+    /// Check if this is a local file (fast random access) or remote (expensive reads)
+    fn is_local(&self) -> bool {
+        let id = self.identifier();
+        !id.starts_with("http://") && !id.starts_with("https://") && !id.starts_with("s3://")
+    }
 }
 
 /// Local file range reader

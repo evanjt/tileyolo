@@ -1,5 +1,6 @@
 pub mod cog;
 pub mod cog_reader;
+pub mod compliance;
 pub mod local;
 pub mod lzw_fallback;
 pub mod metadata;
