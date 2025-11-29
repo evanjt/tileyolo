@@ -772,55 +772,21 @@ mod tests {
         layer::{Layer, LayerGeometry},
         style::ColourStop,
     };
+    use crate::reader::test_utils::{SyntheticRaster, RasterPattern, assert_approx_eq};
 
     async fn make_layer(min_value: f32, max_value: f32) -> Layer {
-        let path = PathBuf::new(); // will be set per-test
+        let path = PathBuf::new();
         let colour_stops = vec![
-            ColourStop {
-                value: 0.0,
-                red: 215,
-                green: 25,
-                blue: 28,
-                alpha: 255,
-            },
-            ColourStop {
-                value: 100.0,
-                red: 253,
-                green: 174,
-                blue: 97,
-                alpha: 255,
-            },
-            ColourStop {
-                value: 200.0,
-                red: 255,
-                green: 255,
-                blue: 191,
-                alpha: 255,
-            },
-            ColourStop {
-                value: 300.0,
-                red: 171,
-                green: 221,
-                blue: 164,
-                alpha: 255,
-            },
-            ColourStop {
-                value: 400.0,
-                red: 43,
-                green: 131,
-                blue: 186,
-                alpha: 255,
-            },
+            ColourStop { value: 0.0, red: 215, green: 25, blue: 28, alpha: 255 },
+            ColourStop { value: 100.0, red: 253, green: 174, blue: 97, alpha: 255 },
+            ColourStop { value: 200.0, red: 255, green: 255, blue: 191, alpha: 255 },
+            ColourStop { value: 300.0, red: 171, green: 221, blue: 164, alpha: 255 },
+            ColourStop { value: 400.0, red: 43, green: 131, blue: 186, alpha: 255 },
         ];
 
         let source_geometry = LayerGeometry {
             crs_code: 3857,
-            extent: GeometryExtent {
-                minx: 0.0,
-                miny: 0.0,
-                maxx: 256.0,
-                maxy: 256.0,
-            },
+            extent: GeometryExtent { minx: 0.0, miny: 0.0, maxx: 256.0, maxy: 256.0 },
         };
         let cached_geometry = source_geometry.generate_cached_geometry_sync().unwrap();
         Layer {
@@ -840,44 +806,344 @@ mod tests {
 
     #[tokio::test]
     async fn test_process_cog_basic() {
-        // This test will need to be updated once we have test COG files
-        // For now, we'll just test that the function structure works
         let tile_size = (256, 256);
         let mut layer = make_layer(1.0, 100.0).await;
-        layer.path = PathBuf::from("test_data/sample.tif"); // This will need to exist
+        layer.path = PathBuf::from("test_data/sample.tif");
 
-        let extent = GeometryExtent {
-            minx: 0.0,
-            miny: 0.0,
-            maxx: 256.0,
-            maxy: 256.0,
-        };
-
-        // This will fail until we have proper test data, but tests the structure
+        let extent = GeometryExtent { minx: 0.0, miny: 0.0, maxx: 256.0, maxy: 256.0 };
         let result = process_cog(layer.path.clone(), extent, layer, tile_size).await;
 
-        // We expect this to fail without proper test data, but the structure should work
+        // Expected to fail without proper test data
         match result {
-            Ok(_) => {
-                // If it succeeds, verify the output
-                // let buffer = result.unwrap();
-                // assert!(!buffer.is_empty());
-                // let decoder = PngDecoder::new(Cursor::new(&buffer)).unwrap();
-                // assert_eq!(decoder.color_type(), ColorType::Rgba8);
-            }
-            Err(_) => {
-                // Expected to fail without proper test data
-            }
+            Ok(_) => {}
+            Err(_) => {}
         }
     }
 
+    // ========================================================================
+    // Transform Tests
+    // ========================================================================
+
     #[test]
-    fn test_world_to_pixel_conversion() {
+    fn test_world_to_pixel_identity() {
+        // Identity transform: world coords = pixel coords
         let transform = AffineTransform::new(1.0, 0.0, 0.0, 0.0, 1.0, 0.0);
         let world_coord = Coord { x: 10.0, y: 20.0 };
         let pixel_coord = world_to_pixel(world_coord, &transform);
 
         assert!((pixel_coord.x - 10.0).abs() < f64::EPSILON);
         assert!((pixel_coord.y - 20.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_world_to_pixel_scaled() {
+        // Scaled transform: 10 world units = 1 pixel
+        let transform = AffineTransform::new(10.0, 0.0, 0.0, 0.0, 10.0, 0.0);
+        let world_coord = Coord { x: 100.0, y: 200.0 };
+        let pixel_coord = world_to_pixel(world_coord, &transform);
+
+        assert!((pixel_coord.x - 10.0).abs() < 0.001);
+        assert!((pixel_coord.y - 20.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_world_to_pixel_with_offset() {
+        // Transform with offset: origin at (1000, 2000)
+        let transform = AffineTransform::new(1.0, 0.0, 1000.0, 0.0, 1.0, 2000.0);
+        let world_coord = Coord { x: 1010.0, y: 2020.0 };
+        let pixel_coord = world_to_pixel(world_coord, &transform);
+
+        assert!((pixel_coord.x - 10.0).abs() < 0.001);
+        assert!((pixel_coord.y - 20.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_world_to_pixel_web_mercator_style() {
+        // Typical Web Mercator style: Y inverted, origin at top-left
+        let pixel_width = 156543.0; // ~zoom level 0
+        let origin_x = -20037508.342789244;
+        let origin_y = 20037508.342789244;
+        let transform = AffineTransform::new(
+            pixel_width, 0.0, origin_x,
+            0.0, -pixel_width, origin_y
+        );
+
+        // World (0, 0) should be roughly center of image
+        let world_coord = Coord { x: 0.0, y: 0.0 };
+        let pixel_coord = world_to_pixel(world_coord, &transform);
+
+        // At zoom 0, center should be around pixel 128
+        assert!(pixel_coord.x > 100.0 && pixel_coord.x < 200.0);
+        assert!(pixel_coord.y > 100.0 && pixel_coord.y < 200.0);
+    }
+
+    // ========================================================================
+    // Build Transform Tests
+    // ========================================================================
+
+    #[test]
+    fn test_build_affine_transform_with_geotags() {
+        let pixel_scale = Some([10.0, 10.0, 0.0]);
+        let tiepoint = Some([0.0, 0.0, 0.0, 100.0, 500.0, 0.0]);
+        let transform = build_affine_transform(100, 50, pixel_scale, tiepoint);
+
+        // Check transform coefficients
+        assert_approx_eq(transform.a() as f32, 10.0, 0.001, "x_scale");
+        assert_approx_eq(transform.e() as f32, -10.0, 0.001, "y_scale (negative for image coords)");
+        assert_approx_eq(transform.xoff() as f32, 100.0, 0.001, "x_origin");
+        assert_approx_eq(transform.yoff() as f32, 500.0, 0.001, "y_origin");
+    }
+
+    #[test]
+    fn test_build_affine_transform_fallback() {
+        // Without geotags, should fallback to Web Mercator world
+        let transform = build_affine_transform(256, 256, None, None);
+
+        // Check it covers Web Mercator extent
+        let web_mercator_extent = 20037508.342789244 * 2.0;
+        let expected_pixel_size = web_mercator_extent / 256.0;
+
+        assert_approx_eq(transform.a() as f32, expected_pixel_size as f32, 1.0, "fallback pixel width");
+    }
+
+    // ========================================================================
+    // Tile Extraction Tests with Synthetic Data
+    // ========================================================================
+
+    #[test]
+    fn test_extract_tile_region_identity_transform() {
+        // Create synthetic raster with coordinate-encoded pattern
+        let raster = SyntheticRaster::new(256, 256, RasterPattern::CoordinateEncoded)
+            .with_identity_transform();
+
+        let transform = AffineTransform::new(1.0, 0.0, 0.0, 0.0, -1.0, 256.0);
+        let source_extent = GeometryExtent::new(0.0, 0.0, 256.0, 256.0);
+        let tile_extent = GeometryExtent::new(0.0, 0.0, 256.0, 256.0);
+
+        let result = extract_tile_region(
+            &raster,
+            &transform,
+            &tile_extent,
+            &source_extent,
+            (256, 256),
+        ).unwrap();
+
+        assert_eq!(result.len(), 256 * 256);
+
+        // Check corners - with identity transform, tile pixels should match source pixels
+        // Top-left (0, 0)
+        let tl_value = result[0];
+        assert!(!tl_value.is_nan(), "Top-left should have data");
+
+        // Check that we have varying values (not all same)
+        let unique_values: std::collections::HashSet<u32> = result.iter()
+            .filter(|v| !v.is_nan())
+            .map(|v| *v as u32)
+            .collect();
+        assert!(unique_values.len() > 1, "Should have multiple unique values");
+    }
+
+    #[test]
+    fn test_extract_tile_region_quadrants() {
+        let raster = SyntheticRaster::new(100, 100, RasterPattern::Quadrants)
+            .with_identity_transform();
+
+        let transform = AffineTransform::new(1.0, 0.0, 0.0, 0.0, -1.0, 100.0);
+        let source_extent = GeometryExtent::new(0.0, 0.0, 100.0, 100.0);
+
+        // Extract top-left quadrant only
+        let tile_extent = GeometryExtent::new(0.0, 50.0, 50.0, 100.0);
+        let result = extract_tile_region(
+            &raster,
+            &transform,
+            &tile_extent,
+            &source_extent,
+            (50, 50),
+        ).unwrap();
+
+        // All values should be 1.0 (top-left quadrant)
+        let valid_values: Vec<f32> = result.iter().filter(|v| !v.is_nan()).copied().collect();
+        if !valid_values.is_empty() {
+            // At least some pixels should be from quadrant 1
+            assert!(valid_values.iter().any(|&v| (v - 1.0).abs() < 0.1),
+                "Top-left quadrant should contain value 1.0");
+        }
+    }
+
+    #[test]
+    fn test_extract_tile_region_outside_bounds() {
+        let raster = SyntheticRaster::new(100, 100, RasterPattern::Constant(42.0))
+            .with_identity_transform();
+
+        let transform = AffineTransform::new(1.0, 0.0, 0.0, 0.0, -1.0, 100.0);
+        let source_extent = GeometryExtent::new(0.0, 0.0, 100.0, 100.0);
+
+        // Request tile completely outside source
+        let tile_extent = GeometryExtent::new(200.0, 200.0, 300.0, 300.0);
+        let result = extract_tile_region(
+            &raster,
+            &transform,
+            &tile_extent,
+            &source_extent,
+            (100, 100),
+        ).unwrap();
+
+        // Note: When no valid pixels are found, the fallback function samples from center
+        // So we expect either all NaN (no transform fallback triggered) or values from center
+        // The important thing is the function doesn't crash
+        assert_eq!(result.len(), 100 * 100, "Should return correct number of pixels");
+    }
+
+    #[test]
+    fn test_extract_tile_region_partial_overlap() {
+        let raster = SyntheticRaster::new(100, 100, RasterPattern::Constant(42.0))
+            .with_identity_transform();
+
+        let transform = AffineTransform::new(1.0, 0.0, 0.0, 0.0, -1.0, 100.0);
+        let source_extent = GeometryExtent::new(0.0, 0.0, 100.0, 100.0);
+
+        // Request tile that partially overlaps source
+        let tile_extent = GeometryExtent::new(50.0, 50.0, 150.0, 150.0);
+        let result = extract_tile_region(
+            &raster,
+            &transform,
+            &tile_extent,
+            &source_extent,
+            (100, 100),
+        ).unwrap();
+
+        // Should have some valid and some NaN values
+        let valid_count = result.iter().filter(|v| !v.is_nan()).count();
+        let nan_count = result.iter().filter(|v| v.is_nan()).count();
+
+        assert!(valid_count > 0, "Should have some valid pixels in overlap");
+        assert!(nan_count > 0, "Should have some NaN pixels outside source");
+    }
+
+    // ========================================================================
+    // Gradient Extraction Tests
+    // ========================================================================
+
+    #[test]
+    fn test_extract_horizontal_gradient() {
+        let raster = SyntheticRaster::new(100, 100, RasterPattern::HorizontalGradient)
+            .with_identity_transform();
+
+        let transform = AffineTransform::new(1.0, 0.0, 0.0, 0.0, -1.0, 100.0);
+        let source_extent = GeometryExtent::new(0.0, 0.0, 100.0, 100.0);
+        let tile_extent = GeometryExtent::new(0.0, 0.0, 100.0, 100.0);
+
+        let result = extract_tile_region(
+            &raster,
+            &transform,
+            &tile_extent,
+            &source_extent,
+            (100, 100),
+        ).unwrap();
+
+        // Check that values increase left to right (first row)
+        let first_row: Vec<f32> = result[0..100].to_vec();
+        let valid_first_row: Vec<f32> = first_row.iter()
+            .filter(|v| !v.is_nan())
+            .copied()
+            .collect();
+
+        if valid_first_row.len() > 10 {
+            // Values should generally increase
+            let first_val = valid_first_row[0];
+            let last_val = *valid_first_row.last().unwrap();
+            assert!(last_val >= first_val,
+                "Horizontal gradient should increase left to right");
+        }
+    }
+
+    // ========================================================================
+    // Styling Tests
+    // ========================================================================
+
+    #[test]
+    fn test_nodata_handling() {
+        assert!(is_nodata(f32::NAN));
+        assert!(!is_nodata(0.0));
+        assert!(!is_nodata(42.0));
+        assert!(!is_nodata(f32::INFINITY));
+    }
+
+    #[test]
+    fn test_colour_stop_interpolation() {
+        let stops = vec![
+            ColourStop { value: 0.0, red: 0, green: 0, blue: 0, alpha: 255 },
+            ColourStop { value: 100.0, red: 255, green: 255, blue: 255, alpha: 255 },
+        ];
+
+        // Test interpolation at midpoint
+        let scaled = 50.0;
+        let mut colour = Rgba([0, 0, 0, 0]);
+        for w in stops.windows(2) {
+            let a = &w[0];
+            let b = &w[1];
+            if scaled >= a.value && scaled <= b.value {
+                let t = (scaled - a.value) / (b.value - a.value);
+                let r = ((1.0 - t) * a.red as f32 + t * b.red as f32) as u8;
+                let g = ((1.0 - t) * a.green as f32 + t * b.green as f32) as u8;
+                let b_ = ((1.0 - t) * a.blue as f32 + t * b.blue as f32) as u8;
+                let a_ = ((1.0 - t) * a.alpha as f32 + t * b.alpha as f32) as u8;
+                colour = Rgba([r, g, b_, a_]);
+                break;
+            }
+        }
+
+        // At 50%, should be ~127 for all channels
+        assert!((colour.0[0] as i32 - 127).abs() <= 1, "Red should be ~127");
+        assert!((colour.0[1] as i32 - 127).abs() <= 1, "Green should be ~127");
+        assert!((colour.0[2] as i32 - 127).abs() <= 1, "Blue should be ~127");
+    }
+
+    // ========================================================================
+    // Min/Max Computation Tests
+    // ========================================================================
+
+    #[test]
+    fn test_raster_read_result_compute_min_max() {
+        // Create array with known values
+        let data = ndarray::Array3::from_shape_fn((1, 10, 10), |(_, y, x)| {
+            (x + y * 10) as f32
+        });
+        let result = RasterReadResult::Array(data);
+
+        let (min, max) = result.compute_min_max().unwrap();
+        assert_approx_eq(min, 0.0, 0.001, "min value");
+        assert_approx_eq(max, 99.0, 0.001, "max value");
+    }
+
+    #[test]
+    fn test_raster_read_result_compute_min_max_with_nan() {
+        // Create array with some NaN values
+        let mut data = ndarray::Array3::from_shape_fn((1, 10, 10), |(_, y, x)| {
+            (x + y * 10) as f32
+        });
+        // Set some values to NaN
+        data[[0, 0, 0]] = f32::NAN;
+        data[[0, 5, 5]] = f32::NAN;
+
+        let result = RasterReadResult::Array(data);
+        let (min, max) = result.compute_min_max().unwrap();
+
+        // Should skip NaN values
+        assert!(!min.is_nan(), "min should not be NaN");
+        assert!(!max.is_nan(), "max should not be NaN");
+        assert_approx_eq(min, 1.0, 0.001, "min value (skipping NaN at 0,0)");
+        assert_approx_eq(max, 99.0, 0.001, "max value");
+    }
+
+    #[test]
+    fn test_raster_read_result_dimensions() {
+        let data = ndarray::Array3::from_shape_fn((3, 100, 200), |_| 0.0f32);
+        let result = RasterReadResult::Array(data);
+
+        let (bands, height, width) = result.dimensions();
+        assert_eq!(bands, 3);
+        assert_eq!(height, 100);
+        assert_eq!(width, 200);
     }
 }

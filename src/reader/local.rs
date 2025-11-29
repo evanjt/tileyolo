@@ -315,3 +315,144 @@ fn tile_bounds_to_3857(z: u8, x: u32, y: u32) -> GeometryExtent {
         maxy,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Web Mercator bounds constant (half the world in meters)
+    const HALF_WORLD: f64 = 20037508.342789244;
+
+    #[test]
+    fn test_tile_bounds_zoom_0() {
+        // Zoom 0 has a single tile covering the entire world
+        let bounds = tile_bounds_to_3857(0, 0, 0);
+
+        // Should cover -20037508 to +20037508 in both X and Y
+        assert!((bounds.minx - (-HALF_WORLD)).abs() < 0.01);
+        assert!((bounds.maxx - HALF_WORLD).abs() < 0.01);
+        assert!((bounds.miny - (-HALF_WORLD)).abs() < 0.01);
+        assert!((bounds.maxy - HALF_WORLD).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_tile_bounds_zoom_1() {
+        // Zoom 1 has 2x2 = 4 tiles
+
+        // Top-left tile (0, 0) - NW quadrant
+        let tl = tile_bounds_to_3857(1, 0, 0);
+        assert!((tl.minx - (-HALF_WORLD)).abs() < 0.01);
+        assert!((tl.maxx - 0.0).abs() < 0.01);
+        assert!((tl.miny - 0.0).abs() < 0.01);
+        assert!((tl.maxy - HALF_WORLD).abs() < 0.01);
+
+        // Top-right tile (1, 0) - NE quadrant
+        let tr = tile_bounds_to_3857(1, 1, 0);
+        assert!((tr.minx - 0.0).abs() < 0.01);
+        assert!((tr.maxx - HALF_WORLD).abs() < 0.01);
+        assert!((tr.miny - 0.0).abs() < 0.01);
+        assert!((tr.maxy - HALF_WORLD).abs() < 0.01);
+
+        // Bottom-left tile (0, 1) - SW quadrant
+        let bl = tile_bounds_to_3857(1, 0, 1);
+        assert!((bl.minx - (-HALF_WORLD)).abs() < 0.01);
+        assert!((bl.maxx - 0.0).abs() < 0.01);
+        assert!((bl.miny - (-HALF_WORLD)).abs() < 0.01);
+        assert!((bl.maxy - 0.0).abs() < 0.01);
+
+        // Bottom-right tile (1, 1) - SE quadrant
+        let br = tile_bounds_to_3857(1, 1, 1);
+        assert!((br.minx - 0.0).abs() < 0.01);
+        assert!((br.maxx - HALF_WORLD).abs() < 0.01);
+        assert!((br.miny - (-HALF_WORLD)).abs() < 0.01);
+        assert!((br.maxy - 0.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_tile_bounds_tile_size() {
+        // Each tile should have the same dimensions at a given zoom level
+        let z = 5;
+        let expected_size = 2.0 * HALF_WORLD / (2f64.powi(z as i32));
+
+        for x in 0..4 {
+            for y in 0..4 {
+                let bounds = tile_bounds_to_3857(z, x, y);
+                let width = bounds.maxx - bounds.minx;
+                let height = bounds.maxy - bounds.miny;
+
+                assert!(
+                    (width - expected_size).abs() < 0.01,
+                    "Width mismatch at ({}, {}): {} vs {}",
+                    x, y, width, expected_size
+                );
+                assert!(
+                    (height - expected_size).abs() < 0.01,
+                    "Height mismatch at ({}, {}): {} vs {}",
+                    x, y, height, expected_size
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_tile_bounds_adjacent_tiles() {
+        // Adjacent tiles should share edges
+        let z = 4;
+
+        let tile_a = tile_bounds_to_3857(z, 5, 5);
+        let tile_right = tile_bounds_to_3857(z, 6, 5);
+        let tile_below = tile_bounds_to_3857(z, 5, 6);
+
+        // Right edge of A should equal left edge of tile_right
+        assert!(
+            (tile_a.maxx - tile_right.minx).abs() < 0.01,
+            "Horizontal gap: {} vs {}",
+            tile_a.maxx, tile_right.minx
+        );
+
+        // Bottom edge of A should equal top edge of tile_below
+        assert!(
+            (tile_a.miny - tile_below.maxy).abs() < 0.01,
+            "Vertical gap: {} vs {}",
+            tile_a.miny, tile_below.maxy
+        );
+    }
+
+    #[test]
+    fn test_tile_bounds_known_tile() {
+        // Test a specific tile with known bounds (zoom 2, tile 2,1 covers roughly Europe/Africa)
+        let bounds = tile_bounds_to_3857(2, 2, 1);
+
+        // This tile covers X: 0 to half_world/2, Y: 0 to half_world/2
+        let expected_size = HALF_WORLD / 2.0;
+        assert!((bounds.minx - 0.0).abs() < 0.01);
+        assert!((bounds.maxx - expected_size).abs() < 0.01);
+        assert!((bounds.miny - 0.0).abs() < 0.01);
+        assert!((bounds.maxy - expected_size).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_tile_bounds_high_zoom() {
+        // Test at a high zoom level to ensure no overflow or precision issues
+        let z = 18;
+        let max_tile = (1u32 << z) - 1;
+
+        // Test corner tiles
+        let tl = tile_bounds_to_3857(z, 0, 0);
+        assert!(tl.minx.is_finite() && tl.maxx.is_finite());
+        assert!(tl.miny.is_finite() && tl.maxy.is_finite());
+
+        let br = tile_bounds_to_3857(z, max_tile, max_tile);
+        assert!(br.minx.is_finite() && br.maxx.is_finite());
+        assert!(br.miny.is_finite() && br.maxy.is_finite());
+
+        // Tile size should be very small at high zoom
+        let tile_size = tl.maxx - tl.minx;
+        let expected_size = 2.0 * HALF_WORLD / (2f64.powi(z as i32));
+        assert!(
+            (tile_size - expected_size).abs() < 0.0001,
+            "Tile size at z={}: {} vs {}",
+            z, tile_size, expected_size
+        );
+    }
+}
