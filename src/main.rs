@@ -195,19 +195,16 @@ fn run_compliance_check(
     if show_fix && !needs_fixing.is_empty() {
         println!("\n# Commands to convert files to compliant COG format:");
         println!("# (Copy and run these in your terminal)\n");
+        println!("mkdir -p ./cog_output\n");
         for file in needs_fixing {
             let input = file.to_string_lossy();
-            let stem = file.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-            let parent = file.parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
-            let output = if parent.is_empty() {
-                format!("{}_cog.tif", stem)
-            } else {
-                format!("{}/{}_cog.tif", parent, stem)
-            };
-            println!("gdal_translate -of COG -co COMPRESS=DEFLATE -co BLOCKSIZE=512 \"{}\" \"{}\"", input, output);
+            let filename = file.file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| "output.tif".to_string());
+            println!("gdal_translate -of COG -co COMPRESS=DEFLATE -co BLOCKSIZE=512 \"{}\" \"./cog_output/{}\"", input, filename);
         }
-        println!("\n# After conversion, add statistics:");
-        println!("# gdalinfo -stats <output_file>");
+        println!("\n# After conversion, add statistics to all files:");
+        println!("for f in ./cog_output/*.tif; do gdalinfo -stats \"$f\"; done");
     }
 
     // Print summary
