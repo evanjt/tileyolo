@@ -290,6 +290,9 @@ pub struct CogReader {
     pub metadata: CogMetadata,
     /// Overview levels (sorted by scale factor, smallest to largest)
     pub overviews: Vec<OverviewMetadata>,
+    /// Minimum usable overview index - overviews beyond this have insufficient data
+    /// None means all overviews are usable, Some(n) means only overviews 0..n are usable
+    pub min_usable_overview: Option<usize>,
 }
 
 impl CogReader {
@@ -363,7 +366,76 @@ impl CogReader {
             }
         }
 
-        Ok(Self { reader, metadata, overviews })
+        let mut cog_reader = Self {
+            reader,
+            metadata,
+            overviews,
+            min_usable_overview: None,
+        };
+
+        // Analyze overview quality to find minimum usable level
+        cog_reader.analyze_overview_quality();
+
+        Ok(cog_reader)
+    }
+
+    /// Analyze overview quality by sampling tiles to find valid data density
+    /// This determines which overviews have enough data to be useful
+    fn analyze_overview_quality(&mut self) {
+        if self.overviews.is_empty() {
+            return;
+        }
+
+        // For each overview (from smallest/coarsest to largest/finest), check if it has enough data
+        // We sample a few tiles from each overview and check data density
+        //
+        // Use 5% threshold - this is aggressive but ensures good visual results for sparse data.
+        // For a file with 6% valid data at full res, overviews with <5% are significantly degraded.
+        // The trade-off is that sparse datasets will read more tiles at low zoom, but the visual
+        // quality improvement is dramatic (see barley crop data as example).
+        let min_density_threshold = 0.05; // 5% - require good data density for visual quality
+
+        let mut last_good_overview: Option<usize> = None;
+        let mut overview_densities: Vec<(usize, f64)> = Vec::new();
+
+        // Iterate from smallest overview (highest index, coarsest) to largest (index 0, finest)
+        for (idx, ovr) in self.overviews.iter().enumerate().rev() {
+            // Sample up to 3 tiles from this overview
+            let num_tiles = ovr.tile_offsets.len();
+            let sample_indices: Vec<usize> = if num_tiles <= 3 {
+                (0..num_tiles).collect()
+            } else {
+                // Sample first, middle, and last tiles
+                vec![0, num_tiles / 2, num_tiles - 1]
+            };
+
+            let mut total_pixels = 0usize;
+            let mut valid_pixels = 0usize;
+
+            for &tile_idx in &sample_indices {
+                if let Ok(data) = self.read_overview_tile(idx, tile_idx) {
+                    total_pixels += data.len();
+                    valid_pixels += data.iter().filter(|v| !v.is_nan() && **v != 0.0).count();
+                }
+            }
+
+            let density = if total_pixels > 0 {
+                valid_pixels as f64 / total_pixels as f64
+            } else {
+                0.0
+            };
+
+            overview_densities.push((idx, density));
+
+            if density >= min_density_threshold {
+                last_good_overview = Some(idx);
+                break; // Found a good overview, don't need to check higher resolution ones
+            }
+        }
+
+        // If we found a good overview, set it as the minimum usable
+        // All overviews with index > last_good_overview are too sparse
+        self.min_usable_overview = last_good_overview;
     }
 
     /// Find the best overview level for a given source extent size
@@ -376,6 +448,12 @@ impl CogReader {
     ///
     /// Returns None if full resolution should be used
     pub fn best_overview_for_resolution(&self, extent_src_width: usize, extent_src_height: usize) -> Option<usize> {
+        // If min_usable_overview is None, ALL overviews are too sparse - always use full resolution
+        // This is critical for sparse datasets where even the largest overview has insufficient data
+        if self.min_usable_overview.is_none() && !self.overviews.is_empty() {
+            return None;
+        }
+
         // Default output tile size
         let output_size = 256.0;
 
@@ -398,6 +476,15 @@ impl CogReader {
         let mut best_scale = 0usize;
 
         for (idx, ovr) in self.overviews.iter().enumerate() {
+            // Skip overviews that have been determined to have insufficient data
+            // min_usable_overview = Some(n) means only overviews 0..=n have enough data
+            if let Some(min_usable) = self.min_usable_overview {
+                if idx > min_usable {
+                    // This overview is too sparse (beyond the minimum usable level)
+                    continue;
+                }
+            }
+
             // This overview has 1/scale resolution compared to full
             // We can use it if the overview has at least as many pixels as we need
             // needed_scale = extent_pixels / output_pixels

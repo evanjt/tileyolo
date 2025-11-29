@@ -239,6 +239,64 @@ pub fn check_file<P: AsRef<Path>>(path: P) -> Result<ComplianceReport, String> {
         });
     }
 
+    // Check 10: Sparse overview data
+    // For files with overviews, check if the smallest overviews have lost too much data
+    // This commonly happens with sparse data (crop yields, sparse measurements) when
+    // overviews are generated with AVERAGE resampling instead of NEAREST
+    if !reader.overviews.is_empty() {
+        // Check the minimum usable overview that was determined during reader initialization
+        if let Some(min_usable) = reader.min_usable_overview {
+            let total_overviews = reader.overviews.len();
+            let skipped_overviews = total_overviews.saturating_sub(min_usable + 1);
+
+            if skipped_overviews > 0 {
+                // Calculate approximate data density at the smallest usable overview
+                let usable_ovr = &reader.overviews[min_usable];
+
+                issues.push(ComplianceIssue {
+                    severity: Severity::Warning,
+                    code: "SPARSE_OVERVIEWS",
+                    message: format!(
+                        "Sparse data detected: {} of {} overviews have insufficient data. \
+                        Smallest usable overview is {} ({}x{}, scale {}x).",
+                        skipped_overviews,
+                        total_overviews,
+                        min_usable,
+                        usable_ovr.width,
+                        usable_ovr.height,
+                        usable_ovr.scale
+                    ),
+                    recommendation: "For sparse data (crop yields, point measurements, etc.), \
+                        regenerate the COG with NEAREST neighbor resampling to preserve data \
+                        in overviews: \n\
+                        gdal_translate -of COG -co COMPRESS=DEFLATE -co OVERVIEW_RESAMPLING=NEAREST \
+                        <input> <output>\n\
+                        This prevents AVERAGE resampling from diluting sparse values to zero."
+                        .to_string(),
+                });
+            }
+        } else {
+            // No usable overview found at all - all overviews are too sparse
+            if !reader.overviews.is_empty() {
+                issues.push(ComplianceIssue {
+                    severity: Severity::Warning,
+                    code: "ALL_OVERVIEWS_SPARSE",
+                    message: format!(
+                        "Sparse data: all {} overviews have <5% valid pixels. \
+                        Will use full resolution for best quality (slower but better visuals).",
+                        reader.overviews.len()
+                    ),
+                    recommendation: "The source data is very sparse and all overviews have lost \
+                        most data during generation. Regenerate with NEAREST neighbor resampling: \n\
+                        gdal_translate -of COG -co COMPRESS=DEFLATE -co OVERVIEW_RESAMPLING=NEAREST \
+                        <input> <output>\n\
+                        If the issue persists, the data may be too sparse for effective overview usage."
+                        .to_string(),
+                });
+            }
+        }
+    }
+
     // Determine overall compliance
     let has_critical = issues.iter().any(|i| i.severity == Severity::Critical);
     let has_errors = issues.iter().any(|i| i.severity == Severity::Error);
@@ -266,9 +324,14 @@ gdal_translate \
   -co PREDICTOR=2 \
   -co BLOCKSIZE=512 \
   -co OVERVIEWS=AUTO \
-  -co RESAMPLING=AVERAGE \
+  -co OVERVIEW_RESAMPLING=AVERAGE \
   "{input}" \
   "{output}"
+
+# For SPARSE DATA (crop yields, scattered measurements, etc.) use NEAREST instead:
+# gdal_translate -of COG -co COMPRESS=DEFLATE -co BLOCKSIZE=512 \
+#   -co OVERVIEW_RESAMPLING=NEAREST "{input}" "{output}"
+# NEAREST preserves individual data points in overviews instead of averaging to zero.
 
 # Then add statistics:
 gdalinfo -stats "{output}"

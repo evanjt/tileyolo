@@ -14,9 +14,18 @@ struct Cli {
 enum Commands {
     /// Check GeoTIFF files for COG compliance and optimal configuration
     Check {
-        /// Files or directories to check (defaults to ./data)
+        /// Files or directories to check (defaults to --data-folder)
         #[arg(value_name = "PATHS")]
         paths: Vec<PathBuf>,
+
+        /// Path to the data folder (used when no PATHS specified)
+        #[arg(
+            long,
+            default_value_t = Config::default_data_folder(),
+            value_name = "DATA_FOLDER",
+            help = "Path to the data folder"
+        )]
+        data_folder: String,
 
         /// Show only files with issues (hide optimal files)
         #[arg(long, short = 'q')]
@@ -57,9 +66,8 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Commands::Check { paths, quiet, verbose, show_fix }) => {
-            let default_path = Config::default_data_folder();
-            run_compliance_check(paths, &default_path, quiet, verbose, show_fix)
+        Some(Commands::Check { paths, data_folder, quiet, verbose, show_fix }) => {
+            run_compliance_check(paths, &data_folder, quiet, verbose, show_fix)
         }
         Some(Commands::Serve { data_folder, port }) => {
             run_server(&data_folder, port).await
@@ -201,10 +209,13 @@ fn run_compliance_check(
             let filename = file.file_name()
                 .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_else(|| "output.tif".to_string());
-            println!("gdal_translate -of COG -co COMPRESS=DEFLATE -co BLOCKSIZE=512 \"{}\" \"./cog_output/{}\"", input, filename);
+            // Use OVERVIEW_RESAMPLING=NEAREST to preserve sparse data in overviews
+            println!("gdal_translate -of COG -co COMPRESS=DEFLATE -co BLOCKSIZE=512 -co OVERVIEW_RESAMPLING=NEAREST \"{}\" \"./cog_output/{}\"", input, filename);
         }
         println!("\n# After conversion, add statistics to all files:");
         println!("for f in ./cog_output/*.tif; do gdalinfo -stats \"$f\"; done");
+        println!("\n# Note: OVERVIEW_RESAMPLING=NEAREST preserves sparse data at low zoom levels.");
+        println!("# For continuous data (like elevation), use OVERVIEW_RESAMPLING=AVERAGE instead.");
     }
 
     // Print summary

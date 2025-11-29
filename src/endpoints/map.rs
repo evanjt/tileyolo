@@ -25,6 +25,14 @@ pub(super) const INDEX_HTML: &str = r#"<!DOCTYPE html>
         line-height: 26px;
       }
       #map { height: 100%; width: 100%; }
+      /* Force nearest-neighbor rendering on tile images to prevent blurry interpolation
+         during zoom transitions. This is especially important for sparse data where
+         bilinear interpolation makes pixels appear to "scrunch" during zoom. */
+      .leaflet-tile-container img {
+        image-rendering: pixelated;
+        image-rendering: -moz-crisp-edges;
+        image-rendering: crisp-edges;
+      }
     .leaflet-control-zoom .leaflet-control-zoom-to-extent {
       display: block;
       background-color: #fff;

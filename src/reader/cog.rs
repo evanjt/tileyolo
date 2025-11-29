@@ -680,25 +680,19 @@ pub fn extract_tile_with_cog_reader(
     extent_3857: &GeometryExtent,
     tile_size: (usize, usize),
 ) -> Result<TileData, Box<dyn std::error::Error + Send + Sync>> {
-    let (tile_size_x, tile_size_y) = tile_size;
     let metadata = &reader.metadata;
     let geo_transform = &metadata.geo_transform;
 
-    // Create coordinate transformer from EPSG:3857 (tile coords) to source CRS
-    // Uses proj library for accurate transformations to any CRS
-    let source_epsg = metadata.crs_code.unwrap_or(3857) as u32;
-    let transformer = crate::geometry::projection::create_transformer(source_epsg)
-        .map_err(|e| format!("CRS transformation error: {}", e))?;
-
     // Pre-compute the affine transform from output pixel to source pixel
-    let (base_scale, tiepoint) = match (geo_transform.pixel_scale, geo_transform.tiepoint) {
+    let (base_scale, _tiepoint) = match (geo_transform.pixel_scale, geo_transform.tiepoint) {
         (Some(s), Some(t)) => (s, t),
         _ => return Err("Missing geotransform".into()),
     };
 
-    // Calculate what resolution we need from the COG
-    // The output tile is tile_size_x × tile_size_y pixels
-    // We need to find an overview level that has enough resolution for that output
+    // Create coordinate transformer from EPSG:3857 (tile coords) to source CRS
+    let source_epsg = metadata.crs_code.unwrap_or(3857) as u32;
+    let transformer = crate::geometry::projection::create_transformer(source_epsg)
+        .map_err(|e| format!("CRS transformation error: {}", e))?;
 
     // Convert extent to source CRS to get geographic extent
     let (src_minx, src_miny) = crate::geometry::projection::transform_coords(&transformer, extent_3857.minx, extent_3857.miny);
@@ -708,13 +702,35 @@ pub fn extract_tile_with_cog_reader(
     let extent_src_width = ((src_maxx - src_minx) / base_scale[0]).abs().max(1.0) as usize;
     let extent_src_height = ((src_maxy - src_miny) / base_scale[1]).abs().max(1.0) as usize;
 
-    // The ratio tells us how many source pixels per output pixel we'd have at full res
-    // If extent covers 21600 source pixels but we only output 256, we can use a 64x overview
-    // If extent covers only 256 source pixels for 256 output, we need full resolution
-    //
-    // Pass the EXTENT SIZE IN SOURCE PIXELS to find an appropriate overview
-    // The function will compare this to the full resolution size to determine the scale factor
+    // Find the best overview level
     let overview_idx = reader.best_overview_for_resolution(extent_src_width, extent_src_height);
+
+    // Call the internal function with automatic fallback for empty overviews
+    extract_tile_with_overview(reader, extent_3857, tile_size, overview_idx)
+}
+
+/// Internal function that extracts a tile using a specific overview level (or full resolution if None)
+/// Includes fallback logic for empty overview levels
+fn extract_tile_with_overview(
+    reader: &CogReader,
+    extent_3857: &GeometryExtent,
+    tile_size: (usize, usize),
+    overview_idx: Option<usize>,
+) -> Result<TileData, Box<dyn std::error::Error + Send + Sync>> {
+    let (tile_size_x, tile_size_y) = tile_size;
+    let metadata = &reader.metadata;
+    let geo_transform = &metadata.geo_transform;
+
+    // Create coordinate transformer from EPSG:3857 (tile coords) to source CRS
+    let source_epsg = metadata.crs_code.unwrap_or(3857) as u32;
+    let transformer = crate::geometry::projection::create_transformer(source_epsg)
+        .map_err(|e| format!("CRS transformation error: {}", e))?;
+
+    // Pre-compute the affine transform from output pixel to source pixel
+    let (base_scale, tiepoint) = match (geo_transform.pixel_scale, geo_transform.tiepoint) {
+        (Some(s), Some(t)) => (s, t),
+        _ => return Err("Missing geotransform".into()),
+    };
 
     // Get effective metadata for the level we're using
     let (eff_width, eff_height, eff_tile_width, eff_tile_height, eff_tiles_across, scale_factor) = if let Some(ovr_idx) = overview_idx {
@@ -823,6 +839,9 @@ pub fn extract_tile_with_cog_reader(
 
     // Pre-load all needed tiles into cache (from overview or full resolution)
     let mut tile_cache: HashMap<usize, Vec<f32>> = HashMap::with_capacity(needed_tiles.len());
+    let mut valid_data_count = 0usize;
+    let mut total_pixels = 0usize;
+
     for &tile_idx in &needed_tiles {
         let data = if let Some(ovr_idx) = overview_idx {
             reader.read_overview_tile(ovr_idx, tile_idx)
@@ -831,8 +850,23 @@ pub fn extract_tile_with_cog_reader(
         };
 
         if let Ok(data) = data {
+            // Count valid (non-NaN, non-zero) pixels
+            valid_data_count += data.iter().filter(|v| !v.is_nan() && **v != 0.0).count();
+            total_pixels += data.len();
             tile_cache.insert(tile_idx, data);
         }
+    }
+
+    // If the selected overview has insufficient valid data, fall back to full resolution
+    // This handles COG files with sparse data where overviews lose too much information
+    // Require at least 0.1% valid data in the loaded tiles, or fall back
+    let valid_ratio = if total_pixels > 0 { valid_data_count as f64 / total_pixels as f64 } else { 0.0 };
+    let min_valid_threshold = 0.001; // 0.1% - very sparse data is ok, but essentially empty is not
+
+    if overview_idx.is_some() && valid_ratio < min_valid_threshold {
+        // For sparse data, overviews often lose too much - go straight to full resolution
+        // This reads more tiles but ensures we get actual data
+        return extract_tile_with_overview(reader, extent_3857, tile_size, None);
     }
 
     // Now sample pixels - all tiles should already be loaded
@@ -1673,3 +1707,33 @@ mod tests {
         assert!(lat.abs() < 1e-6, "Origin latitude should be ~0");
     }
 }
+
+    /// Test that EPSG:4326 files work with overview fallback for empty overviews
+    #[test]
+    fn test_4326_overview_fallback() {
+        let path = "cog_output/viridis/barley.tif";
+
+        if !std::path::Path::new(path).exists() {
+            println!("Skipping - file not found: {}", path);
+            return;
+        }
+
+        let reader = CogReader::open(path).expect("Failed to open");
+
+        // Zoom 0 extent in Web Mercator
+        let extent_z0 = GeometryExtent::new(
+            -20037508.342789244,
+            -20037508.342789244,
+            20037508.342789244,
+            20037508.342789244,
+        );
+
+        // Extract tile - should work even if smallest overview is empty
+        let result = extract_tile_with_cog_reader(&reader, &extent_z0, (256, 256));
+        assert!(result.is_ok(), "Tile extraction should succeed");
+
+        // Note: For sparse data like barley, the actual valid pixel count depends
+        // on data coverage. The important thing is that extraction doesn't fail.
+        let tile = result.unwrap();
+        assert_eq!(tile.pixels.len(), 256 * 256, "Should have correct pixel count");
+    }
