@@ -126,18 +126,27 @@ impl LocalTileReader {
                 Ok(layer) => layer,
                 Err(e) => {
                     let err_str = e.to_string();
-                    // Provide helpful conversion instructions for common non-COG errors
+                    // Categorize errors with user-friendly descriptions
                     let reason = if err_str.contains("Missing tag 324") || err_str.contains("Missing tag 325") {
                         pb.println(format!("   ⚠ Skipping: {} (not tiled)", file_stem));
-                        "not tiled".to_string()
+                        "not_tiled"
                     } else if err_str.contains("failed to fill whole buffer") {
-                        pb.println(format!("   ⚠ Skipping: {} (truncated/invalid)", file_stem));
-                        "truncated/invalid".to_string()
+                        pb.println(format!("   ⚠ Skipping: {} (incomplete file)", file_stem));
+                        "incomplete"
+                    } else if err_str.contains("Invalid TIFF") || err_str.contains("Invalid signature") {
+                        pb.println(format!("   ⚠ Skipping: {} (not a valid TIFF)", file_stem));
+                        "invalid_tiff"
+                    } else if err_str.contains("Unsupported compression") {
+                        pb.println(format!("   ⚠ Skipping: {} (unsupported compression)", file_stem));
+                        "unsupported_compression"
+                    } else if err_str.contains("geotransform") || err_str.contains("tiepoint") || err_str.contains("pixel_scale") {
+                        pb.println(format!("   ⚠ Skipping: {} (missing georeferencing)", file_stem));
+                        "no_georef"
                     } else {
                         pb.println(format!("   ⚠ Skipping: {} ({})", file_stem, err_str));
-                        err_str
+                        "other"
                     };
-                    skipped_files.push((path, reason));
+                    skipped_files.push((path, reason.to_string()));
                     pb.inc(1);
                     continue; // Skip this file and continue processing others
                 }
@@ -159,20 +168,41 @@ impl LocalTileReader {
 
         // Print skipped files summary with helpful instructions
         if !skipped_files.is_empty() {
-            println!("\n⚠️  {} file(s) were skipped due to compatibility issues:", skipped_files.len());
-            for (path, reason) in &skipped_files {
-                let name = path.file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| path.display().to_string());
-                println!("   • {} ({})", name, reason);
+            // Group files by reason
+            let mut by_reason: HashMap<&str, usize> = HashMap::new();
+            for (_path, reason) in &skipped_files {
+                *by_reason.entry(reason.as_str()).or_insert(0) += 1;
             }
+
+            // User-friendly descriptions for each reason (kept short to fit in box)
+            let reason_descriptions: HashMap<&str, &str> = [
+                ("not_tiled", "Not tiled (uses strips instead of tiles)"),
+                ("incomplete", "Incomplete/truncated file"),
+                ("invalid_tiff", "Not a valid TIFF/GeoTIFF"),
+                ("unsupported_compression", "Unsupported compression format"),
+                ("no_georef", "Missing georeferencing metadata"),
+                ("other", "Other issue (see above)"),
+            ].into_iter().collect();
+
             println!();
-            println!("   To convert files to compatible COG format:");
-            println!("   $ gdal_translate -of COG -co COMPRESS=DEFLATE -co BLOCKSIZE=512 <input.tif> <output.tif>");
-            println!("   $ gdalinfo -stats <output.tif>");
-            println!();
-            println!("   For detailed compliance analysis:");
-            println!("   $ tileyolo check <path>");
+            println!("┌────────────────────────────────────────────────────────────────────┐");
+            println!("│  ⚠️  {} file(s) skipped - not compatible with TileYolo              │", skipped_files.len());
+            println!("├────────────────────────────────────────────────────────────────────┤");
+
+            for (reason, count) in &by_reason {
+                let desc = reason_descriptions.get(reason).unwrap_or(&"Unknown issue");
+                let content = format!("  {:>2} file(s): {}", count, desc);
+                let padding = 66usize.saturating_sub(content.len());
+                println!("│{}{}│", content, " ".repeat(padding));
+            }
+
+            println!("├────────────────────────────────────────────────────────────────────┤");
+            println!("│  To fix: convert to Cloud Optimized GeoTIFF (COG) format           │");
+            println!("│  $ gdal_translate -of COG -co COMPRESS=DEFLATE input.tif out.tif   │");
+            println!("│  $ gdalinfo -stats out.tif                                         │");
+            println!("│                                                                    │");
+            println!("│  For detailed analysis: $ tileyolo check <path>                    │");
+            println!("└────────────────────────────────────────────────────────────────────┘");
         }
 
         print_layer_summary(&layers);
