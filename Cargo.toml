@@ -50,6 +50,13 @@ reqwest = { version = "0.12", features = ["blocking"] }
 tracing = "0.1"
 flate2 = "1.0"
 zstd = "0.13"
+# GDAL is optional - only used for validation tests
+gdal = { version = "0.18", features = ["bindgen"], optional = true }
+
+[features]
+default = []
+# Enable GDAL validation tests (requires GDAL to be installed)
+gdal-tests = ["gdal"]
 
 [dev-dependencies]
 rand = "0.9.1"

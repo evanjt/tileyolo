@@ -16,6 +16,9 @@ mod test_lzw_mod;
 #[cfg(test)]
 mod simple_test;
 
+#[cfg(all(test, feature = "gdal-tests"))]
+mod gdal_validation_tests;
+
 // #[cfg(test)]
 // mod numerical_tests; // TODO: Update to use cog3pio instead of GDAL
 
