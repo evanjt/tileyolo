@@ -29,6 +29,9 @@ pub struct LayerMetadata {
     /// Number of bands/channels (1=grayscale, 3=RGB, 4=RGBA)
     #[serde(default = "default_bands")]
     pub bands: usize,
+    /// Whether the file is tiled (COG-optimised) or stripped (not optimised)
+    #[serde(default = "default_is_tiled")]
+    pub is_tiled: bool,
 
     // split extent tuple into four CSV columns
     pub extent_minx: f64,
@@ -39,6 +42,10 @@ pub struct LayerMetadata {
 
 fn default_bands() -> usize {
     1 // Default to single band for backwards compatibility with existing caches
+}
+
+fn default_is_tiled() -> bool {
+    true // Default to tiled for backwards compatibility with existing caches
 }
 
 impl LayerMetadata {
@@ -59,6 +66,7 @@ impl LayerMetadata {
             max_value: layer.max_value,
             is_cog: layer.is_cog,
             bands: layer.bands,
+            is_tiled: layer.is_tiled,
             extent_minx: layer.source_geometry.extent.minx,
             extent_miny: layer.source_geometry.extent.miny,
             extent_maxx: layer.source_geometry.extent.maxx,
@@ -109,6 +117,7 @@ impl LayerMetadata {
             is_cog: self.is_cog,
             last_modified,
             bands: self.bands,
+            is_tiled: self.is_tiled,
         }
     }
 }

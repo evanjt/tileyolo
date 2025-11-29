@@ -1125,6 +1125,7 @@ mod tests {
             is_cog: true,
             last_modified: std::time::SystemTime::UNIX_EPOCH,
             bands: 1,
+            is_tiled: true,
         }
     }
 

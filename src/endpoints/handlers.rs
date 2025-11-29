@@ -52,6 +52,8 @@ pub struct LayerResponse {
     min_value: f32,
     max_value: f32,
     is_cog: bool,
+    /// Whether the file is tiled (COG-optimised) or stripped (not optimised for streaming)
+    is_tiled: bool,
     last_modified: std::time::SystemTime,
 }
 
@@ -70,6 +72,7 @@ pub async fn get_all_layers(State(reader): State<Arc<dyn TileReader>>) -> impl I
             min_value: layer.min_value,
             max_value: layer.max_value,
             is_cog: layer.is_cog,
+            is_tiled: layer.is_tiled,
             last_modified: layer.last_modified,
         });
     }

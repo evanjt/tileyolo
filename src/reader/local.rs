@@ -234,7 +234,8 @@ impl LocalTileReader {
 
         // Get CRS from GeoKey directory (default to Web Mercator if not found)
         let auth_code = metadata.crs_code.unwrap_or(3857);
-        let is_cog = metadata.is_tiled();
+        let is_cog = true; // We successfully opened it with CogReader
+        let is_tiled = metadata.is_tiled; // Tiled = COG-optimised, stripped = not optimised
         let bands = metadata.bands;
 
         // Get min/max from GDAL statistics if available, otherwise estimate from sampled tiles
@@ -268,6 +269,7 @@ impl LocalTileReader {
             is_cog,
             last_modified,
             bands,
+            is_tiled,
         })
     }
 }

@@ -18,6 +18,9 @@ pub struct Layer {
     pub last_modified: std::time::SystemTime,
     /// Number of bands/channels in the image (1=grayscale, 3=RGB, 4=RGBA)
     pub bands: usize,
+    /// Whether the file is tiled (COG-optimised) or stripped (not optimised)
+    /// Tiled files are faster for partial reads and cloud access
+    pub is_tiled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
