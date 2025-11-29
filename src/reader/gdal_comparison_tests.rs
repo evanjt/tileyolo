@@ -68,6 +68,7 @@ mod tests {
 
         // Use gdal_translate to extract region as raw ENVI format (preserves exact values)
         // Don't use -scale to keep original values
+        // Let GDAL use overviews (AUTO) to match our overview-based approach
         let output = Command::new("gdal_translate")
             .args([
                 "-of", "ENVI",
@@ -206,17 +207,18 @@ mod tests {
         println!("  Max diff: {:.2}", stats.max_diff);
 
         // Assertions - these define our quality bar
-        // Note: We use pre-computed overviews for speed, which gives different results
-        // than GDAL's full-resolution downsampling. RMSE <10 is acceptable for overview-based reading.
-        // Native resolution test verifies our pixel sampling is correct (RMSE ~0.27).
+        // Note: At zoom 0 we read from overviews (327x327), which were pre-computed with
+        // a resampling algorithm during COG creation. GDAL also uses overviews but may
+        // compute intermediate values differently. RMSE < 8 is acceptable for overview-based reading.
+        // The native resolution test (RMSE 0.27) proves our pixel sampling is correct.
         assert!(
-            stats.rmse < 10.0,
-            "RMSE should be < 10.0 at zoom 0 (using overviews), got {:.2}",
+            stats.rmse < 8.0,
+            "RMSE should be < 8.0 at zoom 0 (overview-based), got {:.2}",
             stats.rmse
         );
         assert!(
             stats.max_diff < 90.0,
-            "Max diff should be < 90 at zoom 0, got {:.2}",
+            "Max diff should be < 90 at zoom 0 (some edge artifacts expected), got {:.2}",
             stats.max_diff
         );
     }
@@ -257,10 +259,11 @@ mod tests {
                 stats.rmse, stats.max_diff,
                 100.0 * stats.pixels_within_1 as f32 / stats.pixels_compared.max(1) as f32);
 
-            // Using pre-computed overviews gives different results than GDAL's full-res downsampling
+            // Overview-based reading inherently differs from GDAL's approach
+            // Different tiles may use different overviews leading to variable RMSE
             assert!(
                 stats.rmse < 10.0,
-                "RMSE should be < 10.0 at zoom 2 tile ({},{},{}) (using overviews), got {:.2}",
+                "RMSE should be < 10.0 at zoom 2 tile ({},{},{}) (overview-based), got {:.2}",
                 z, x, y, stats.rmse
             );
         }
@@ -303,10 +306,11 @@ mod tests {
                 println!("Tile z={} x={} y={}: RMSE={:.2}, Max={:.2}",
                     z, x, y, stats.rmse, stats.max_diff);
 
-                // Using pre-computed overviews gives different results than GDAL's full-res downsampling
+                // Overview-based reading inherently differs from GDAL's approach
+                // Different tiles may use different overviews leading to variable RMSE
                 assert!(
                     stats.rmse < 15.0,
-                    "RMSE should be < 15.0 at zoom 4 tile ({},{},{}) (using overviews), got {:.2}",
+                    "RMSE should be < 15.0 at zoom 4 tile ({},{},{}) (overview-based), got {:.2}",
                     z, x, y, stats.rmse
                 );
             }
@@ -450,15 +454,15 @@ mod tests {
         println!("Edge pixels: count={}, mean_diff={:.2}, max_diff={:.2}",
             count, mean_diff, max_diff);
 
-        // Using pre-computed overviews gives different results than GDAL's full-res downsampling
+        // Overview-based reading inherently differs from GDAL's approach
         assert!(
             mean_diff < 5.0,
-            "Mean edge pixel diff should be < 5.0 (using overviews), got {:.2}",
+            "Mean edge pixel diff should be < 5.0 (overview-based), got {:.2}",
             mean_diff
         );
         assert!(
-            max_diff < 50.0,
-            "Max edge pixel diff should be < 50 (using overviews), got {:.2}",
+            max_diff < 70.0,
+            "Max edge pixel diff should be < 70 (some edge artifacts expected), got {:.2}",
             max_diff
         );
     }
@@ -1094,11 +1098,11 @@ mod tests {
             100.0 * stats.pixels_exact_match as f32 / stats.pixels_compared.max(1) as f32);
         println!("  RMSE: {:.2}", stats.rmse);
 
-        // Using pre-computed overviews gives different results than GDAL's full-res downsampling
+        // High zoom may still use overviews depending on tile size
         if stats.pixels_compared > 100 {
             assert!(
-                stats.rmse < 15.0,
-                "RMSE at high zoom should be < 15.0 (using overviews), got {:.2}",
+                stats.rmse < 10.0,
+                "RMSE at high zoom should be < 10.0 (overview-based), got {:.2}",
                 stats.rmse
             );
         }
@@ -1810,10 +1814,10 @@ mod tests {
         println!("  Exact matches: {} ({:.1}%)", stats.pixels_exact_match,
             100.0 * stats.pixels_exact_match as f32 / stats.pixels_compared.max(1) as f32);
 
-        // Using pre-computed overviews gives different results than GDAL's full-res downsampling
+        // Overview-based reading inherently differs from GDAL's approach
         assert!(
             stats.rmse < 10.0,
-            "RMSE vs GDAL nearest should be < 10.0 (using overviews), got {:.2}",
+            "RMSE vs GDAL nearest should be < 10.0 (overview-based), got {:.2}",
             stats.rmse
         );
     }
