@@ -316,9 +316,11 @@ impl CogReader {
         }
 
         let ifd_offset = read_u32(&header_bytes[4..8], little_endian);
+        let file_size = reader.size();
 
         // Read IFD entries - estimate size based on typical COG (usually < 4KB)
-        let ifd_size_estimate = 4096;
+        // Clamp to available bytes if IFD is near end of file
+        let ifd_size_estimate = 4096.min((file_size - ifd_offset as u64) as usize);
         let ifd_bytes = reader.read_range(ifd_offset as u64, ifd_size_estimate)?;
 
         let (metadata, next_ifd_offset) = parse_ifd_with_next(&ifd_bytes, &reader, ifd_offset as u64, little_endian)?;
@@ -329,7 +331,8 @@ impl CogReader {
         let full_width = metadata.width;
 
         while current_ifd_offset != 0 {
-            let ovr_ifd_bytes = reader.read_range(current_ifd_offset as u64, ifd_size_estimate)?;
+            let ovr_ifd_size = 4096.min((file_size - current_ifd_offset as u64) as usize);
+            let ovr_ifd_bytes = reader.read_range(current_ifd_offset as u64, ovr_ifd_size)?;
 
             if let Ok((ovr_meta, next_offset)) = parse_overview_ifd(&ovr_ifd_bytes, &reader, current_ifd_offset as u64, little_endian, &metadata) {
                 // Calculate actual scale from dimensions using floor division

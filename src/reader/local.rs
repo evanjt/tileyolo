@@ -130,18 +130,19 @@ impl LocalTileReader {
                     let reason = if err_str.contains("Missing tag 324") || err_str.contains("Missing tag 325") {
                         pb.println(format!("   ⚠ Skipping: {} (not tiled)", file_stem));
                         "not_tiled"
-                    } else if err_str.contains("failed to fill whole buffer") {
-                        pb.println(format!("   ⚠ Skipping: {} (incomplete file)", file_stem));
-                        "incomplete"
+                    } else if err_str.contains("Unsupported compression") {
+                        // Extract compression code if present
+                        pb.println(format!("   ⚠ Skipping: {} (unsupported compression)", file_stem));
+                        "unsupported_compression"
                     } else if err_str.contains("Invalid TIFF") || err_str.contains("Invalid signature") {
                         pb.println(format!("   ⚠ Skipping: {} (not a valid TIFF)", file_stem));
                         "invalid_tiff"
-                    } else if err_str.contains("Unsupported compression") {
-                        pb.println(format!("   ⚠ Skipping: {} (unsupported compression)", file_stem));
-                        "unsupported_compression"
                     } else if err_str.contains("geotransform") || err_str.contains("tiepoint") || err_str.contains("pixel_scale") {
                         pb.println(format!("   ⚠ Skipping: {} (missing georeferencing)", file_stem));
                         "no_georef"
+                    } else if err_str.contains("failed to fill whole buffer") {
+                        pb.println(format!("   ⚠ Skipping: {} (file read error)", file_stem));
+                        "read_error"
                     } else {
                         pb.println(format!("   ⚠ Skipping: {} ({})", file_stem, err_str));
                         "other"
@@ -177,7 +178,7 @@ impl LocalTileReader {
             // User-friendly descriptions for each reason (kept short to fit in box)
             let reason_descriptions: HashMap<&str, &str> = [
                 ("not_tiled", "Not tiled (uses strips instead of tiles)"),
-                ("incomplete", "Incomplete/truncated file"),
+                ("read_error", "File read error (may need re-export)"),
                 ("invalid_tiff", "Not a valid TIFF/GeoTIFF"),
                 ("unsupported_compression", "Unsupported compression format"),
                 ("no_georef", "Missing georeferencing metadata"),

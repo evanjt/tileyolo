@@ -104,56 +104,123 @@ fn run_compliance_check(
     println!("Checking {} file(s) for COG compliance...\n", files_to_check.len());
 
     let mut summary = BatchSummary::default();
+    let mut results: Vec<(String, String, Vec<String>)> = Vec::new(); // (filename, status, issues)
+    let mut failed: Vec<(String, String)> = Vec::new(); // (filename, error)
 
     for file in &files_to_check {
+        let filename = file.file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| file.display().to_string());
+
         match compliance::check_file(file) {
             Ok(report) => {
-                // Skip optimal files in quiet mode
-                if quiet && report.is_optimal {
-                    summary.add_report(&report);
-                    continue;
-                }
-
                 if verbose {
                     compliance::print_report(&report);
+                }
+
+                let status = if report.is_optimal {
+                    "✓ OK"
+                } else if report.is_compliant {
+                    "~ WARN"
                 } else {
-                    // Brief output
-                    let status = if report.is_optimal {
-                        "✓ OPTIMAL"
-                    } else if report.is_compliant {
-                        "~ COMPLIANT"
-                    } else {
-                        "✗ ISSUES"
-                    };
+                    "✗ ERR"
+                };
 
-                    let issues_str = if report.issues.is_empty() {
-                        String::new()
-                    } else {
-                        let codes: Vec<_> = report.issues.iter().map(|i| i.code).collect();
-                        format!(" [{}]", codes.join(", "))
-                    };
-
-                    println!("{} {}{}", status, file.display(), issues_str);
-                }
-
-                if show_fix && !report.is_optimal {
-                    let input = file.to_string_lossy();
-                    let output = format!("{}_cog.tif",
-                        file.file_stem().map(|s| s.to_string_lossy()).unwrap_or_default());
-                    println!("  Fix: {}", compliance::gdal_command_short(&input, &output));
-                }
-
+                let issues: Vec<String> = report.issues.iter().map(|i| i.code.to_string()).collect();
+                results.push((filename, status.to_string(), issues));
                 summary.add_report(&report);
             }
             Err(e) => {
-                println!("✗ FAILED {} - {}", file.display(), e);
+                failed.push((filename, e.to_string()));
                 summary.add_failure();
             }
         }
     }
 
+    // Print table of results
+    if !verbose {
+        println!("┌─────────────────────────────────────────┬────────┬─────────────────────────────────────┐");
+        println!("│ File                                    │ Status │ Issues                              │");
+        println!("├─────────────────────────────────────────┼────────┼─────────────────────────────────────┤");
+
+        for (filename, status, issues) in &results {
+            if quiet && status == "✓ OK" {
+                continue;
+            }
+            let short_name = if filename.len() > 39 {
+                format!("...{}", &filename[filename.len()-36..])
+            } else {
+                filename.clone()
+            };
+            let issues_str = if issues.is_empty() {
+                "-".to_string()
+            } else {
+                issues.join(", ")
+            };
+            let short_issues = if issues_str.len() > 35 {
+                format!("{}...", &issues_str[..32])
+            } else {
+                issues_str
+            };
+            println!("│ {:<39} │ {:<6} │ {:<35} │", short_name, status, short_issues);
+        }
+
+        // Print failed files
+        for (filename, error) in &failed {
+            let short_name = if filename.len() > 39 {
+                format!("...{}", &filename[filename.len()-36..])
+            } else {
+                filename.clone()
+            };
+            let short_err = if error.len() > 35 {
+                format!("{}...", &error[..32])
+            } else {
+                error.clone()
+            };
+            println!("│ {:<39} │ ✗ FAIL │ {:<35} │", short_name, short_err);
+        }
+
+        println!("└─────────────────────────────────────────┴────────┴─────────────────────────────────────┘");
+    }
+
+    // Print fix commands section if requested or if there are issues
+    let needs_fixing: Vec<_> = files_to_check.iter()
+        .filter(|f| {
+            let fname = f.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            results.iter().any(|(n, s, _)| n == &fname && s != "✓ OK") ||
+            failed.iter().any(|(n, _)| n == &fname)
+        })
+        .collect();
+
+    if show_fix && !needs_fixing.is_empty() {
+        println!("\n# Commands to convert files to compliant COG format:");
+        println!("# (Copy and run these in your terminal)\n");
+        for file in needs_fixing {
+            let input = file.to_string_lossy();
+            let stem = file.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+            let parent = file.parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+            let output = if parent.is_empty() {
+                format!("{}_cog.tif", stem)
+            } else {
+                format!("{}/{}_cog.tif", parent, stem)
+            };
+            println!("gdal_translate -of COG -co COMPRESS=DEFLATE -co BLOCKSIZE=512 \"{}\" \"{}\"", input, output);
+        }
+        println!("\n# After conversion, add statistics:");
+        println!("# gdalinfo -stats <output_file>");
+    }
+
     // Print summary
-    summary.print();
+    println!("\nSummary: {} total, {} optimal, {} warnings, {} failed",
+        summary.total_files,
+        summary.optimal_files,
+        summary.compliant_files - summary.optimal_files,
+        summary.failed_files + summary.non_compliant_files
+    );
+
+    if !show_fix && (summary.failed_files > 0 || summary.compliant_files < summary.total_files) {
+        println!("\nRun with --show-fix to get GDAL commands for converting files.");
+    }
 
     // Exit with error code if there are non-compliant files
     if summary.non_compliant_files > 0 || summary.failed_files > 0 {
