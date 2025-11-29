@@ -48,28 +48,36 @@ use tileyolo::TileYoloRouter;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Build the TileYolo router from a data directory
-    let tiles = TileYoloRouter::from_directory("./geo_data")
-        .await?
-        .into_router();
+    let tiles = TileYoloRouter::from_directory("./geo_data").await?;
 
-    // Nest it into your application at any path
+    // Option 1: Full router with all endpoints
     let app = Router::new()
-        .nest("/geo", tiles)  // Tiles available at /geo/tiles/{layer}/{z}/{x}/{y}
-        .route("/health", axum::routing::get(|| async { "ok" }));
+        .nest("/geo", tiles.into_router());
+    // Results in: /geo/tiles/{layer}/{z}/{x}/{y}, /geo/layers, /geo/map
 
-    // Serve with your own server setup
+    // Option 2: Individual routes with custom paths
+    let tiles = TileYoloRouter::from_directory("./geo_data").await?;
+    let app = Router::new()
+        .merge(tiles.tile_route("/xyz/{layer}/{z}/{x}/{y}"))  // Custom tile path
+        .merge(tiles.layers_route("/api/layers"))             // Optional
+        .merge(tiles.map_route("/viewer"));                   // Optional
+
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await?;
     axum::serve(listener, app).await?;
     Ok(())
 }
 ```
 
-The router provides these endpoints (relative to where you nest it):
-- `GET /tiles/{layer}/{z}/{x}/{y}?style=...` - XYZ tile endpoint (PNG)
-- `GET /layers` - JSON list of available layers with metadata
-- `GET /map` - Interactive web map viewer
+**Available methods:**
 
-Use `into_api_router()` instead of `into_router()` to exclude the `/map` viewer.
+| Method | Description |
+|--------|-------------|
+| `into_router()` | Full router: `/tiles`, `/layers`, `/map` |
+| `into_api_router()` | API only: `/tiles`, `/layers` |
+| `into_tiles_only_router()` | Just tiles: `/tiles` |
+| `tile_route(path)` | Single tile endpoint at custom path |
+| `layers_route(path)` | Single layers endpoint at custom path |
+| `map_route(path)` | Single map viewer at custom path |
 
 #### Dependencies
 

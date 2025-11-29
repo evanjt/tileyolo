@@ -1,42 +1,47 @@
 //! Router builder for embedding TileYolo into existing axum applications.
 //!
-//! This module provides a builder pattern for creating a TileYolo router
-//! that can be nested into any axum application at a path of your choice.
+//! This module provides flexible options for integrating TileYolo routes
+//! into any axum application.
 //!
-//! # Example
+//! # Quick Start
 //!
 //! ```rust,no_run
 //! use axum::Router;
 //! use tileyolo::TileYoloRouter;
-//! use std::path::PathBuf;
 //!
 //! #[tokio::main]
 //! async fn main() -> anyhow::Result<()> {
-//!     // Build the TileYolo router
-//!     let tiles = TileYoloRouter::from_directory("./geo_data")
-//!         .await?
-//!         .into_router();
+//!     let tiles = TileYoloRouter::from_directory("./geo_data").await?;
 //!
-//!     // Nest it into your application at any path
-//!     let app = Router::new()
-//!         .nest("/geo", tiles)
-//!         // ... your other routes
-//!         .route("/health", axum::routing::get(|| async { "ok" }));
+//!     // Option 1: Full router with all endpoints
+//!     let app = Router::new().nest("/geo", tiles.into_router());
 //!
-//!     // Serve with your own server setup
-//!     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await?;
-//!     axum::serve(listener, app).await?;
+//!     // Option 2: Individual routes for full control (see examples below)
 //!     Ok(())
 //! }
 //! ```
 //!
-//! # Routes Provided
+//! # Individual Route Methods
 //!
-//! The router provides these endpoints (relative to where you nest it):
+//! For maximum flexibility, you can add individual endpoints:
 //!
-//! - `GET /tiles/{layer}/{z}/{x}/{y}` - XYZ tile endpoint (PNG)
-//! - `GET /layers` - JSON list of available layers
-//! - `GET /map` - Interactive web map viewer
+//! ```rust,no_run
+//! use axum::Router;
+//! use tileyolo::TileYoloRouter;
+//!
+//! # async fn example() -> anyhow::Result<()> {
+//! let tiles = TileYoloRouter::from_directory("./data").await?;
+//!
+//! let app = Router::new()
+//!     // Custom path for tiles - use any name you want
+//!     .merge(tiles.tile_route("/xyz/{layer}/{z}/{x}/{y}"))
+//!     // Optionally add layers endpoint
+//!     .merge(tiles.layers_route("/api/layers"))
+//!     // Optionally add map viewer
+//!     .merge(tiles.map_route("/viewer"));
+//! # Ok(())
+//! # }
+//! ```
 
 use crate::config::Source;
 use crate::endpoints::handlers::{get_all_layers, tile_handler, webmap_handler};
@@ -46,10 +51,37 @@ use axum::{routing::get, Router};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-/// Builder for creating a TileYolo router that can be embedded in existing axum applications.
+/// Builder for creating TileYolo routes that can be embedded in existing axum applications.
 ///
-/// Use [`TileYoloRouter::from_directory`] to create a router from a local directory,
-/// or [`TileYoloRouter::from_source`] for more advanced configuration.
+/// Provides both convenience methods for common setups and granular methods
+/// for full control over route paths.
+///
+/// # Examples
+///
+/// ## Full Router (All Endpoints)
+/// ```rust,no_run
+/// # use tileyolo::TileYoloRouter;
+/// # async fn example() -> anyhow::Result<()> {
+/// let tiles = TileYoloRouter::from_directory("./data").await?;
+/// let router = tiles.into_router(); // /tiles, /layers, /map
+/// # Ok(())
+/// # }
+/// ```
+///
+/// ## Custom Tile Path
+/// ```rust,no_run
+/// # use axum::Router;
+/// # use tileyolo::TileYoloRouter;
+/// # async fn example() -> anyhow::Result<()> {
+/// let tiles = TileYoloRouter::from_directory("./data").await?;
+///
+/// // Just tiles at a custom path
+/// let app = Router::new()
+///     .merge(tiles.tile_route("/{layer}/{z}/{x}/{y}"));
+/// # Ok(())
+/// # }
+/// ```
+#[derive(Clone)]
 pub struct TileYoloRouter {
     reader: Arc<dyn TileReader>,
 }
@@ -127,11 +159,88 @@ impl TileYoloRouter {
         self.reader.list_layers().await
     }
 
-    /// Convert into an axum Router that can be nested into your application.
+    // ========================================================================
+    // Individual Route Methods - For granular control
+    // ========================================================================
+
+    /// Create a router with just the XYZ tile endpoint at a custom path.
+    ///
+    /// The path must include `{layer}`, `{z}`, `{x}`, and `{y}` parameters.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use axum::Router;
+    /// # use tileyolo::TileYoloRouter;
+    /// # async fn example() -> anyhow::Result<()> {
+    /// let tiles = TileYoloRouter::from_directory("./data").await?;
+    ///
+    /// // Standard XYZ path
+    /// let app = Router::new()
+    ///     .merge(tiles.tile_route("/{layer}/{z}/{x}/{y}"));
+    ///
+    /// // Or with a prefix
+    /// let app = Router::new()
+    ///     .merge(tiles.tile_route("/xyz/{layer}/{z}/{x}/{y}"));
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn tile_route(&self, path: &str) -> Router {
+        Router::new()
+            .route(path, get(tile_handler))
+            .with_state(self.reader.clone())
+    }
+
+    /// Create a router with just the layers JSON endpoint at a custom path.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// # use axum::Router;
+    /// # use tileyolo::TileYoloRouter;
+    /// # async fn example() -> anyhow::Result<()> {
+    /// let tiles = TileYoloRouter::from_directory("./data").await?;
+    ///
+    /// let app = Router::new()
+    ///     .merge(tiles.layers_route("/api/geo/layers"));
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn layers_route(&self, path: &str) -> Router {
+        Router::new()
+            .route(path, get(get_all_layers))
+            .with_state(self.reader.clone())
+    }
+
+    /// Create a router with just the interactive map viewer at a custom path.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// # use axum::Router;
+    /// # use tileyolo::TileYoloRouter;
+    /// # async fn example() -> anyhow::Result<()> {
+    /// let tiles = TileYoloRouter::from_directory("./data").await?;
+    ///
+    /// let app = Router::new()
+    ///     .merge(tiles.map_route("/viewer"));
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn map_route(&self, path: &str) -> Router {
+        Router::new()
+            .route(path, get(webmap_handler))
+            .with_state(self.reader.clone())
+    }
+
+    // ========================================================================
+    // Convenience Methods - For common setups
+    // ========================================================================
+
+    /// Convert into a full axum Router with all endpoints.
     ///
     /// # Routes
     ///
-    /// The returned router includes:
     /// - `GET /tiles/{layer}/{z}/{x}/{y}?style=...` - XYZ tile endpoint
     /// - `GET /layers` - JSON layer listing
     /// - `GET /map` - Interactive web viewer
@@ -145,7 +254,8 @@ impl TileYoloRouter {
     /// let tiles = TileYoloRouter::from_directory("./data").await?;
     ///
     /// let app = Router::new()
-    ///     .nest("/api/tiles", tiles.into_router());
+    ///     .nest("/geo", tiles.into_router());
+    /// // Results in: /geo/tiles/{layer}/{z}/{x}/{y}, /geo/layers, /geo/map
     /// # Ok(())
     /// # }
     /// ```
@@ -157,13 +267,44 @@ impl TileYoloRouter {
             .with_state(self.reader)
     }
 
-    /// Convert into an axum Router without the /map viewer endpoint.
+    /// Convert into an axum Router with tiles and layers (no map viewer).
     ///
     /// Use this if you only need the API endpoints without the interactive viewer.
+    ///
+    /// # Routes
+    ///
+    /// - `GET /tiles/{layer}/{z}/{x}/{y}?style=...` - XYZ tile endpoint
+    /// - `GET /layers` - JSON layer listing
     pub fn into_api_router(self) -> Router {
         Router::new()
             .route("/tiles/{layer}/{z}/{x}/{y}", get(tile_handler))
             .route("/layers", get(get_all_layers))
+            .with_state(self.reader)
+    }
+
+    /// Convert into an axum Router with only the tile endpoint.
+    ///
+    /// # Routes
+    ///
+    /// - `GET /tiles/{layer}/{z}/{x}/{y}?style=...` - XYZ tile endpoint
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// # use axum::Router;
+    /// # use tileyolo::TileYoloRouter;
+    /// # async fn example() -> anyhow::Result<()> {
+    /// let tiles = TileYoloRouter::from_directory("./data").await?;
+    ///
+    /// let app = Router::new()
+    ///     .nest("/xyz", tiles.into_tiles_only_router());
+    /// // Results in: /xyz/tiles/{layer}/{z}/{x}/{y}
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn into_tiles_only_router(self) -> Router {
+        Router::new()
+            .route("/tiles/{layer}/{z}/{x}/{y}", get(tile_handler))
             .with_state(self.reader)
     }
 }
