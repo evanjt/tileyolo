@@ -93,27 +93,30 @@ pub(super) const INDEX_HTML: &str = r#"<!DOCTYPE html>
         const data = await res.json();  // Structure of JSON: [{ layer, style, geometry }, …]
         layersData = data;
 
-        // populate <select>
+        // populate <select> - use index as value to distinguish same layer with different styles
         layerSelect.innerHTML = '';
-        data.forEach(({ layer, style }) => {
+        data.forEach(({ layer, style }, index) => {
           const opt = document.createElement('option');
-          opt.value = layer;
+          opt.value = index;  // Use index to uniquely identify layer+style combo
           opt.textContent = `${layer} (${style})`; // Display as "layer (style)"
           layerSelect.appendChild(opt);
         });
 
         // add first layer to map
-        const first = layerSelect.value;
-        const firstLayerData = data.find(d => d.layer === first);
-        addLayerToMap(first, firstLayerData.geometry);
+        const firstIndex = parseInt(layerSelect.value);
+        const firstLayerData = data[firstIndex];
+        addLayerToMap(firstLayerData.layer, firstLayerData.style, firstLayerData.source_geometry);
       }
 
-      function addLayerToMap(layer, geometry) {
+      function addLayerToMap(layer, style, geometry) {
         if (tileLayer) {
           map.removeLayer(tileLayer);
         }
 
-        tileLayer = L.tileLayer(`/tiles/${layer}/{z}/{x}/{y}`, {
+        // Build tile URL with style query parameter
+        const tileUrl = `/tiles/${layer}/{z}/{x}/{y}?style=${encodeURIComponent(style)}`;
+
+        tileLayer = L.tileLayer(tileUrl, {
           maxZoom: 18,
           tileSize: 256,
           opacity: parseFloat(opacitySlider.value), // Set initial opacity
@@ -131,11 +134,35 @@ pub(super) const INDEX_HTML: &str = r#"<!DOCTYPE html>
       function zoomToLayerExtent(geometry) {
         if (!geometry) return;
 
-        const crsGeom = geometry[4326];
-        const { extent } = crsGeom;  // { minx, miny, maxx, maxy }
+        // source_geometry has { crs_code, extent: { minx, miny, maxx, maxy } }
+        const { extent, crs_code } = geometry;
+
+        // Convert from source CRS to lat/lon for Leaflet
+        // For now, assume extent is in lon/lat (4326) or close to it
+        // Web Mercator (3857) needs conversion
+        let minLat, minLon, maxLat, maxLon;
+
+        if (crs_code === 3857) {
+          // Convert Web Mercator to lat/lon
+          const mercatorToLatLon = (x, y) => {
+            const lon = (x / 20037508.342789244) * 180;
+            let lat = (y / 20037508.342789244) * 180;
+            lat = (180 / Math.PI) * (2 * Math.atan(Math.exp(lat * Math.PI / 180)) - Math.PI / 2);
+            return [lat, lon];
+          };
+          [minLat, minLon] = mercatorToLatLon(extent.minx, extent.miny);
+          [maxLat, maxLon] = mercatorToLatLon(extent.maxx, extent.maxy);
+        } else {
+          // Assume 4326 (lat/lon)
+          minLat = extent.miny;
+          minLon = extent.minx;
+          maxLat = extent.maxy;
+          maxLon = extent.maxx;
+        }
+
         const bounds = [
-          [extent.miny, extent.minx],
-          [extent.maxy, extent.maxx]
+          [minLat, minLon],
+          [maxLat, maxLon]
         ];
 
         map.fitBounds(bounds);
@@ -150,9 +177,9 @@ pub(super) const INDEX_HTML: &str = r#"<!DOCTYPE html>
       });
 
       layerSelect.addEventListener('change', () => {
-        const newLayer = layerSelect.value;
-        const selectedLayerData = layersData.find(d => d.layer === newLayer);
-        addLayerToMap(newLayer, selectedLayerData.geometry);
+        const selectedIndex = parseInt(layerSelect.value);
+        const selectedLayerData = layersData[selectedIndex];
+        addLayerToMap(selectedLayerData.layer, selectedLayerData.style, selectedLayerData.source_geometry);
       });
 
       opacitySlider.addEventListener('input', () => {

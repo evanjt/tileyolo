@@ -26,12 +26,19 @@ pub struct LayerMetadata {
     pub min_value: f32,
     pub max_value: f32,
     pub is_cog: bool,
+    /// Number of bands/channels (1=grayscale, 3=RGB, 4=RGBA)
+    #[serde(default = "default_bands")]
+    pub bands: usize,
 
     // split extent tuple into four CSV columns
     pub extent_minx: f64,
     pub extent_miny: f64,
     pub extent_maxx: f64,
     pub extent_maxy: f64,
+}
+
+fn default_bands() -> usize {
+    1 // Default to single band for backwards compatibility with existing caches
 }
 
 impl LayerMetadata {
@@ -51,6 +58,7 @@ impl LayerMetadata {
             min_value: layer.min_value,
             max_value: layer.max_value,
             is_cog: layer.is_cog,
+            bands: layer.bands,
             extent_minx: layer.source_geometry.extent.minx,
             extent_miny: layer.source_geometry.extent.miny,
             extent_maxx: layer.source_geometry.extent.maxx,
@@ -100,6 +108,7 @@ impl LayerMetadata {
             max_value: self.max_value,
             is_cog: self.is_cog,
             last_modified,
+            bands: self.bands,
         }
     }
 }

@@ -33,6 +33,7 @@ mod tests {
             max_value: 100.0,
             is_cog: true,
             last_modified: std::time::SystemTime::UNIX_EPOCH,
+            bands: 1,
         }
     }
 

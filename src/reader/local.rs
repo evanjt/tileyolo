@@ -6,6 +6,7 @@ use crate::{
     },
     reader::{
         cog::process_cog,
+        cog_reader::CogReader,
         metadata::{LayerMetadata, MetadataCache, key_for, load_cache, save_cache},
     },
     traits::TileReader,
@@ -18,6 +19,7 @@ use std::{
     path::PathBuf,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+use tracing::warn;
 use walkdir::{DirEntry, WalkDir};
 pub struct LocalTileReader {
     layers: HashMap<String, Vec<Layer>>,
@@ -118,11 +120,21 @@ impl LocalTileReader {
                 }
             }
 
-            // Otherwise read fresh via GDAL
+            // Otherwise read fresh via COG reader
             let layer = match Self::get_tiff_metadata(entry).await {
                 Ok(layer) => layer,
                 Err(e) => {
-                    pb.println(format!("❌ Failed to read file: {}", e));
+                    let err_str = e.to_string();
+                    // Provide helpful conversion instructions for common non-COG errors
+                    if err_str.contains("Missing tag 324") || err_str.contains("Missing tag 325") {
+                        pb.println(format!("❌ Skipping non-COG file: {} (not tiled)", path.display()));
+                        pb.println("   ℹ️  Convert to COG with: gdal_translate -of COG -co COMPRESS=DEFLATE input.tif output.tif".to_string());
+                    } else if err_str.contains("failed to fill whole buffer") {
+                        pb.println(format!("❌ Skipping truncated/invalid file: {}", path.display()));
+                        pb.println("   ℹ️  Re-export with: gdal_translate -of COG -co COMPRESS=DEFLATE input.tif output.tif".to_string());
+                    } else {
+                        pb.println(format!("❌ Failed to read file: {}", e));
+                    }
                     continue; // Skip this file and continue processing others
                 }
             };
@@ -144,11 +156,33 @@ impl LocalTileReader {
         print_layer_summary(&layers);
 
         // Build a HashMap of layers keyed by layer name to allow quick access when called for
-        // tiles
+        // tiles. Sort each group so the default style priority is: viridis > rgb > grayscale > others (alphabetical)
         let mut layers_map: HashMap<String, Vec<Layer>> = HashMap::new();
         for layer in layers {
             let layer_name = layer.layer.clone();
             layers_map.entry(layer_name).or_default().push(layer);
+        }
+
+        // Sort styles within each layer group for consistent default selection
+        for styles in layers_map.values_mut() {
+            styles.sort_by(|a, b| {
+                let priority = |s: &str| match s {
+                    "viridis" => 0,
+                    "rgb" => 1,
+                    "grayscale" => 2,
+                    "plasma" => 3,
+                    "magma" => 4,
+                    "inferno" => 5,
+                    _ => 100, // Other styles sorted alphabetically after known ones
+                };
+                let pa = priority(&a.style);
+                let pb = priority(&b.style);
+                if pa != pb {
+                    pa.cmp(&pb)
+                } else {
+                    a.style.cmp(&b.style)
+                }
+            });
         }
 
         Self { layers: layers_map }
@@ -174,28 +208,38 @@ impl LocalTileReader {
             crate::utils::style::parse_style_file(&style_path).unwrap_or_default()
         };
 
-        // Use cog3pio to read metadata
-        let raster = crate::reader::cog::try_read_geotiff_with_flexible_type(&path)
-            .map_err(|e| anyhow::anyhow!("Failed to read GeoTIFF: {}", e))?;
+        // Use CogReader for efficient metadata-only reading (no full file load!)
+        let path_str = path.to_string_lossy().to_string();
+        let cog_reader = CogReader::open(&path_str)
+            .map_err(|e| anyhow::anyhow!("Failed to open COG: {}", e))?;
 
-        let (_bands, height, width) = raster.dimensions();
+        let metadata = &cog_reader.metadata;
+        let width = metadata.width;
+        let height = metadata.height;
 
-        // Create a default extent for now
-        // TODO: Extract proper extent from GeoTIFF tags
-        let extent = GeometryExtent {
-            minx: 0.0,
-            maxx: width as f64,
-            miny: 0.0,
-            maxy: height as f64,
+        // Extract proper geographic extent from GeoTIFF tags
+        let extent = if let Some((minx, miny, maxx, maxy)) = metadata.geo_transform.get_extent(width, height) {
+            GeometryExtent { minx, miny, maxx, maxy }
+        } else {
+            // Fallback to Web Mercator world extent if no geotags
+            warn!(path = %path.display(), "No geotags found, using Web Mercator world extent");
+            let web_mercator_extent = 20037508.342789244;
+            GeometryExtent {
+                minx: -web_mercator_extent,
+                miny: -web_mercator_extent,
+                maxx: web_mercator_extent,
+                maxy: web_mercator_extent,
+            }
         };
 
-        // For now, assume all files are COGs and have EPSG:3857
-        // In a real implementation, we'd need to extract CRS from GeoTIFF tags
-        let is_cog = true; // Assume COG for now
-        let auth_code = 3857; // Default to Web Mercator
+        // Get CRS from GeoKey directory (default to Web Mercator if not found)
+        let auth_code = metadata.crs_code.unwrap_or(3857);
+        let is_cog = metadata.is_tiled();
+        let bands = metadata.bands;
 
-        let (min_value, max_value) = raster
-            .compute_min_max()
+        // Get min/max from GDAL statistics if available, otherwise estimate from sampled tiles
+        let (min_value, max_value) = cog_reader
+            .estimate_min_max()
             .map_err(|e| anyhow::anyhow!("Failed to compute raster min/max: {}", e))?;
 
         let last_modified = entry
@@ -223,6 +267,7 @@ impl LocalTileReader {
             max_value,
             is_cog,
             last_modified,
+            bands,
         })
     }
 }
@@ -258,15 +303,29 @@ impl TileReader for LocalTileReader {
         z: u8,
         x: u32,
         y: u32,
-        _style: Option<&str>,
+        style: Option<&str>,
     ) -> anyhow::Result<TileResponse, String> {
         let tile_size = (256, 256);
 
-        let layer_obj = self
+        let base_layer = self
             .layers
             .get(layer)
             .and_then(|styles| styles.first())
             .ok_or_else(|| format!("Layer not found: '{}'", layer))?;
+
+        // If a style override is requested, create a modified layer with the new style
+        let layer_obj = if let Some(style_name) = style {
+            let mut modified = base_layer.clone();
+            modified.style = style_name.to_string();
+            // For builtin palettes, colour_stops should be empty (looked up at render time)
+            // For custom styles, we'd need to load from a style.txt - not supported via query param
+            if is_builtin_palette(style_name) {
+                modified.colour_stops = Vec::new();
+            }
+            modified
+        } else {
+            base_layer.clone()
+        };
 
         let tile_extent: GeometryExtent = tile_bounds_to_3857(z, x, y);
 
@@ -282,11 +341,11 @@ impl TileReader for LocalTileReader {
             }
         }
 
-        // Process the tile - pass layer by reference to avoid cloning
+        // Process the tile
         let png_data = process_cog(
             layer_obj.path.clone(),
             tile_extent,
-            layer_obj.clone(), // TODO: Refactor process_cog to take &Layer
+            layer_obj,
             tile_size,
         )
         .await

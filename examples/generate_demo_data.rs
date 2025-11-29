@@ -1,24 +1,27 @@
-//! Generate Demo Data
+//! Generate Demo Data and Start Server
 //!
 //! This example generates synthetic GeoTIFF files with realistic terrain-like patterns
-//! that can be used to test and demo the tile server without requiring real data.
+//! and automatically starts the tile server to view them.
 //!
 //! Run with: cargo run --example generate_demo_data
 //!
-//! This will create files in `data/demo/` with different terrain types:
-//! - elevation/ - Mountain/valley terrain (like a DEM)
-//! - bathymetry/ - Ocean depth patterns
-//! - temperature/ - Temperature gradient patterns
-//! - landcover/ - Discrete land cover classes
+//! The server will start at http://localhost:8080 and the generated data will be
+//! automatically cleaned up when the server is stopped (Ctrl+C).
 //!
-//! After generation, run the tile server:
-//!   cargo run -- --data-folder ./data/demo
+//! Generated layers:
+//! - terrain_highres (viridis) - High-res DEM-like elevation
+//! - terrain_medres (turbo) - Medium resolution terrain
+//! - terrain_lowres (magma) - Low resolution overview
+//! - bathymetry (plasma) - Ocean depth patterns
+//! - temperature (inferno) - Temperature gradient
+//! - noise_pattern (spectral) - Simple Perlin noise
+//! - landcover (rainbow) - Discrete land cover classes
 
 use noise::{NoiseFn, Perlin, Fbm, MultiFractal};
 use rayon::prelude::*;
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 /// Web Mercator bounds (EPSG:3857)
@@ -36,41 +39,56 @@ struct TerrainConfig {
     generator: TerrainGenerator,
 }
 
-// Make TerrainGenerator Send + Sync for parallel processing
 #[derive(Clone)]
 #[allow(dead_code)]
 enum TerrainGenerator {
-    /// Fractal brownian motion for realistic terrain
     Fbm { octaves: usize, frequency: f64, lacunarity: f64, persistence: f64 },
-    /// Simple perlin noise
     Perlin { frequency: f64 },
-    /// Earth-like elevation with continents and oceans
     EarthLike { sea_level: f32 },
-    /// Temperature gradient (warm at equator, cold at poles)
     TemperatureGradient,
-    /// Discrete land cover classes
     LandCover { num_classes: u8 },
 }
 
-fn main() {
+/// Guard that cleans up the demo data directory when dropped
+struct CleanupGuard {
+    path: PathBuf,
+}
+
+impl Drop for CleanupGuard {
+    fn drop(&mut self) {
+        println!("\nCleaning up demo data...");
+        if let Err(e) = fs::remove_dir_all(&self.path) {
+            eprintln!("Warning: Failed to clean up {}: {}", self.path.display(), e);
+        } else {
+            println!("Demo data removed.");
+        }
+    }
+}
+
+#[tokio::main]
+async fn main() {
     println!("=== TileYolo Demo Data Generator ===\n");
 
-    let base_path = Path::new("data/demo");
+    let base_path = PathBuf::from("data/demo");
     let start = Instant::now();
 
-    // Define different terrain types
+    // Clean up any existing demo data first
+    if base_path.exists() {
+        println!("Removing existing demo data...");
+        let _ = fs::remove_dir_all(&base_path);
+    }
+
+    // Define terrain types
     let configs = vec![
-        // High resolution DEM-like elevation
         TerrainConfig {
             name: "terrain_highres",
             style_name: "viridis",
             width: 2048,
             height: 2048,
-            min_value: -500.0,  // Below sea level
-            max_value: 4500.0,  // Mountain peaks
+            min_value: -500.0,
+            max_value: 4500.0,
             generator: TerrainGenerator::EarthLike { sea_level: 0.0 },
         },
-        // Medium resolution for faster loading
         TerrainConfig {
             name: "terrain_medres",
             style_name: "turbo",
@@ -80,7 +98,6 @@ fn main() {
             max_value: 4500.0,
             generator: TerrainGenerator::EarthLike { sea_level: 0.0 },
         },
-        // Low resolution overview
         TerrainConfig {
             name: "terrain_lowres",
             style_name: "magma",
@@ -90,14 +107,13 @@ fn main() {
             max_value: 4500.0,
             generator: TerrainGenerator::EarthLike { sea_level: 0.0 },
         },
-        // Ocean bathymetry
         TerrainConfig {
             name: "bathymetry",
             style_name: "plasma",
             width: 1024,
             height: 1024,
-            min_value: -11000.0,  // Mariana Trench depth
-            max_value: 0.0,       // Sea level
+            min_value: -11000.0,
+            max_value: 0.0,
             generator: TerrainGenerator::Fbm {
                 octaves: 6,
                 frequency: 3.0,
@@ -105,17 +121,15 @@ fn main() {
                 persistence: 0.5,
             },
         },
-        // Temperature map
         TerrainConfig {
             name: "temperature",
             style_name: "inferno",
             width: 1024,
             height: 512,
-            min_value: -40.0,  // Arctic cold
-            max_value: 45.0,   // Desert hot
+            min_value: -40.0,
+            max_value: 45.0,
             generator: TerrainGenerator::TemperatureGradient,
         },
-        // Simple noise pattern
         TerrainConfig {
             name: "noise_pattern",
             style_name: "spectral",
@@ -125,7 +139,6 @@ fn main() {
             max_value: 100.0,
             generator: TerrainGenerator::Perlin { frequency: 8.0 },
         },
-        // Land cover classification
         TerrainConfig {
             name: "landcover",
             style_name: "rainbow",
@@ -137,12 +150,14 @@ fn main() {
         },
     ];
 
+    println!("Generating {} terrain layers in parallel...\n", configs.len());
+
     // Generate each terrain type in parallel
     let results: Vec<_> = configs
         .par_iter()
         .map(|config| {
             let layer_start = Instant::now();
-            let result = generate_terrain(config, base_path);
+            let result = generate_terrain(config, &base_path);
             let elapsed = layer_start.elapsed();
             (config.name, config.style_name, result, elapsed)
         })
@@ -156,23 +171,47 @@ fn main() {
         }
     }
 
-    let total_elapsed = start.elapsed();
-    println!("\n=== Generation Complete in {:.2}s ===", total_elapsed.as_secs_f64());
-    println!("\nTo serve the demo data, run:");
-    println!("  cargo run -- --data-folder ./data/demo");
-    println!("\nThen open your browser to:");
-    println!("  http://localhost:8080");
+    let gen_elapsed = start.elapsed();
+    println!("\nGeneration complete in {:.2}s", gen_elapsed.as_secs_f64());
+
+    // Create cleanup guard - will clean up data when server stops
+    let _cleanup = CleanupGuard { path: base_path.clone() };
+
+    // Start the tile server
+    println!("\n=== Starting Tile Server ===");
+    println!("Server will be available at: http://localhost:8080");
+    println!("Press Ctrl+C to stop the server and clean up demo data.\n");
+
+    // Use the library to start the server
+    let config = tileyolo::Config {
+        source: Some(tileyolo::Source::Local(base_path)),
+        data_folder: "data/demo".to_string(),
+        port: 8080,
+        ..Default::default()
+    };
+
+    let server = match tileyolo::TileServer::new(config).await {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Failed to create server: {}", e);
+            return;
+        }
+    };
+
+    // Run until interrupted
+    if let Err(e) = server.start().await {
+        eprintln!("Server error: {}", e);
+    }
+
+    // CleanupGuard will automatically clean up when we exit
 }
 
 fn generate_terrain(config: &TerrainConfig, base_path: &Path) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // Create directory structure: data/demo/{style_name}/
     let style_dir = base_path.join(config.style_name);
     fs::create_dir_all(&style_dir)?;
 
-    // Generate the raster data (parallelized internally)
     let data = generate_raster_data(config);
 
-    // Write as GeoTIFF
     let tiff_path = style_dir.join(format!("{}.tif", config.name));
     write_geotiff(&tiff_path, &data, config.width, config.height)?;
 
@@ -186,15 +225,11 @@ fn generate_raster_data(config: &TerrainConfig) -> Vec<f32> {
     let max_val = config.max_value;
     let generator = config.generator.clone();
 
-    // Generate rows in parallel
     let rows: Vec<Vec<f32>> = (0..height)
         .into_par_iter()
-        .map(|y| {
-            generate_row(y, width, height, min_val, max_val, &generator)
-        })
+        .map(|y| generate_row(y, width, height, min_val, max_val, &generator))
         .collect();
 
-    // Flatten into single vector
     rows.into_iter().flatten().collect()
 }
 
@@ -316,7 +351,6 @@ fn generate_row(
     row
 }
 
-/// Write a simple GeoTIFF file
 fn write_geotiff(
     path: &Path,
     data: &[f32],
@@ -328,26 +362,22 @@ fn write_geotiff(
 
     let mut tiff_data = Vec::new();
 
-    // TIFF Header (8 bytes)
-    tiff_data.extend_from_slice(&[0x49, 0x49]); // "II" = little-endian
-    tiff_data.extend_from_slice(&42u16.to_le_bytes()); // TIFF magic number
-    tiff_data.extend_from_slice(&8u32.to_le_bytes()); // Offset to first IFD
+    // TIFF Header
+    tiff_data.extend_from_slice(&[0x49, 0x49]); // Little-endian
+    tiff_data.extend_from_slice(&42u16.to_le_bytes());
+    tiff_data.extend_from_slice(&8u32.to_le_bytes());
 
     let ifd_offset = 8u32;
     let num_tags = 16u16;
     let ifd_size = 2 + (num_tags as usize * 12) + 4;
     let extra_values_offset = ifd_offset as usize + ifd_size;
 
-    // GeoTIFF tags data
     let pixel_scale = [
         (WEB_MERCATOR_MAX - WEB_MERCATOR_MIN) / width as f64,
         (WEB_MERCATOR_MAX - WEB_MERCATOR_MIN) / height as f64,
         0.0,
     ];
-    let tiepoint = [
-        0.0, 0.0, 0.0,
-        WEB_MERCATOR_MIN, WEB_MERCATOR_MAX, 0.0,
-    ];
+    let tiepoint = [0.0, 0.0, 0.0, WEB_MERCATOR_MIN, WEB_MERCATOR_MAX, 0.0];
     let geo_key_directory: [u16; 16] = [
         1, 1, 0, 3,
         1024, 0, 1, 1,
@@ -361,7 +391,6 @@ fn write_geotiff(
     let image_data_offset = geo_key_offset + 32;
     let image_bytes = data.len() * 4;
 
-    // Build IFD
     let mut ifd = Vec::new();
     ifd.extend_from_slice(&num_tags.to_le_bytes());
 

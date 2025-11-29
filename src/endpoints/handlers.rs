@@ -3,19 +3,24 @@ use crate::models::layer::{Layer, LayerGeometry};
 use crate::traits::TileReader;
 use axum::{
     Json,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::{Html, IntoResponse},
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-#[derive(Serialize, serde::Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct TileRequest {
     layer: String,
     z: u8,
     x: u32,
     y: u32,
+}
+
+#[derive(Deserialize, Default)]
+pub struct TileQuery {
+    pub style: Option<String>,
 }
 
 pub async fn webmap_handler() -> impl IntoResponse {
@@ -24,9 +29,10 @@ pub async fn webmap_handler() -> impl IntoResponse {
 
 pub async fn tile_handler(
     Path((layer, z, x, y)): Path<(String, u8, u32, u32)>,
+    Query(query): Query<TileQuery>,
     State(reader): State<Arc<dyn TileReader>>,
 ) -> impl IntoResponse {
-    match reader.get_tile(&layer, z, x, y, None).await {
+    match reader.get_tile(&layer, z, x, y, query.style.as_deref()).await {
         Ok(tile_data) => tile_data.into_response(),
         Err(e) => {
             eprintln!("Error generating tile: {:?}", e);

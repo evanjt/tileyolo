@@ -46,7 +46,12 @@ pub fn parse_style_file<P: AsRef<Path>>(path: P) -> Result<Vec<ColourStop>, Stri
 }
 
 pub fn is_builtin_palette(name: &str) -> bool {
-    get_builtin_gradient(name).is_some()
+    get_builtin_gradient(name).is_some() || is_rgb_style(name)
+}
+
+/// Check if the style name indicates RGB passthrough rendering
+pub fn is_rgb_style(name: &str) -> bool {
+    matches!(name, "rgb" | "RGB" | "rgba" | "RGBA" | "truecolor")
 }
 
 pub fn get_builtin_gradient(name: &str) -> Option<Box<dyn Gradient>> {

@@ -1,12 +1,15 @@
 use crate::{
     models::{layer::Layer, style::ColourStop},
-    utils::style::{get_builtin_gradient, is_builtin_palette},
+    utils::style::{get_builtin_gradient, is_builtin_palette, is_rgb_style},
 };
 use comfy_table::{Attribute, Cell, CellAlignment, Table};
 use std::collections::HashMap;
 
+/// Style info: (layer_count, colour_stops, min_value, max_value, cog_count, rgb_count, non_rgb_count)
+type StyleInfo = (usize, Vec<ColourStop>, f32, f32, usize, usize, usize);
+
 pub fn print_layer_summary(layers: &Vec<Layer>) {
-    let mut style_info: HashMap<String, (usize, Vec<ColourStop>, f32, f32, usize)> = HashMap::new();
+    let mut style_info: HashMap<String, StyleInfo> = HashMap::new();
     for layer in layers {
         let entry = style_info.entry(layer.style.clone()).or_insert((
             0,
@@ -14,12 +17,20 @@ pub fn print_layer_summary(layers: &Vec<Layer>) {
             layer.min_value,
             layer.max_value,
             0,
+            0, // rgb_count
+            0, // non_rgb_count
         ));
         entry.0 += 1;
         entry.1 = layer.colour_stops.clone();
         entry.2 = entry.2.min(layer.min_value);
         entry.3 = entry.3.max(layer.max_value);
         entry.4 += layer.is_cog as usize;
+        // Track RGB vs non-RGB layers
+        if layer.bands >= 3 {
+            entry.5 += 1; // rgb_count
+        } else {
+            entry.6 += 1; // non_rgb_count
+        }
     }
 
     let mut table = Table::new();
@@ -49,8 +60,12 @@ pub fn print_layer_summary(layers: &Vec<Layer>) {
 
     let mut warnings = Vec::new();
     let mut cog_error_count: usize = 0;
-    for (style, (count, stops, min_v, max_v, num_cogs)) in style_info {
-        let breaks_str = if is_builtin_palette(&style) || stops.is_empty() {
+    for (style, (count, stops, min_v, max_v, num_cogs, _rgb_count, non_rgb_count)) in style_info {
+        let is_rgb_folder = is_rgb_style(&style);
+
+        let breaks_str = if is_rgb_folder {
+            "RGB".to_string()
+        } else if is_builtin_palette(&style) || stops.is_empty() {
             "auto".to_string()
         } else {
             stops
@@ -59,7 +74,10 @@ pub fn print_layer_summary(layers: &Vec<Layer>) {
                 .collect::<Vec<_>>()
                 .join(", ")
         };
-        let bar = if let Some(grad) = get_builtin_gradient(&style) {
+        let bar = if is_rgb_folder {
+            // RGB colorbar representation
+            "\x1b[38;2;255;0;0m█\x1b[0m\x1b[38;2;255;128;0m█\x1b[0m\x1b[38;2;255;255;0m█\x1b[0m\x1b[38;2;0;255;0m█\x1b[0m\x1b[38;2;0;255;255m█\x1b[0m\x1b[38;2;0;128;255m█\x1b[0m\x1b[38;2;0;0;255m█\x1b[0m\x1b[38;2;128;0;255m█\x1b[0m\x1b[38;2;255;0;255m█\x1b[0m\x1b[38;2;255;0;128m█\x1b[0m".to_string()
+        } else if let Some(grad) = get_builtin_gradient(&style) {
             let mut s = String::new();
             let n = 10;
             for i in 0..n {
@@ -118,6 +136,15 @@ pub fn print_layer_summary(layers: &Vec<Layer>) {
             ));
             style_row[0] = Cell::new("⚠️");
             cog_error_count += 1;
+        }
+
+        // Warn about non-RGB images in RGB folder (will fall back to grayscale)
+        if is_rgb_folder && non_rgb_count > 0 {
+            warnings.push(format!(
+                "  ⚠️{}: {} of {} layers are single-band (will render as grayscale instead of RGB)",
+                style_str, non_rgb_count, count
+            ));
+            style_row[0] = Cell::new("⚠️");
         }
 
         table.add_row(style_row);

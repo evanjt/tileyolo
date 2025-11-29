@@ -16,6 +16,8 @@ pub struct Layer {
     pub max_value: f32,
     pub is_cog: bool,
     pub last_modified: std::time::SystemTime,
+    /// Number of bands/channels in the image (1=grayscale, 3=RGB, 4=RGBA)
+    pub bands: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

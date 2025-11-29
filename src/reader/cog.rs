@@ -853,65 +853,19 @@ pub fn extract_tile_with_cog_reader(
             let src_px = tiepoint[0] + (world_x - tiepoint[3]) * inv_scale_x;
             let src_py = tiepoint[1] + (tiepoint[4] - world_y) * inv_scale_y;
 
-            // Bilinear interpolation
-            // Get the four surrounding pixels and blend based on fractional position
-            let x0 = src_px.floor() as isize;
-            let y0 = src_py.floor() as isize;
-            let x1 = x0 + 1;
-            let y1 = y0 + 1;
+            // Nearest neighbor resampling - preserves crisp edges
+            let src_px_int = src_px.round() as isize;
+            let src_py_int = src_py.round() as isize;
 
-            // Fractional parts for interpolation weights
-            let fx = (src_px - src_px.floor()) as f32;
-            let fy = (src_py - src_py.floor()) as f32;
-
-            // Check if we're within bounds (at least partially)
-            if x0 >= -1 && x0 < eff_width as isize &&
-               y0 >= -1 && y0 < eff_height as isize {
+            // Check if we're within bounds
+            if src_px_int >= 0 && src_px_int < eff_width as isize &&
+               src_py_int >= 0 && src_py_int < eff_height as isize {
 
                 let out_idx = (out_y * tile_size_x + out_x) * num_bands;
 
-                // Interpolate each band
+                // Sample each band with nearest neighbor
                 for band in 0..num_bands {
-                    // Get the four corner values (None if out of bounds)
-                    let v00 = if x0 >= 0 && y0 >= 0 {
-                        sample_pixel(x0 as usize, y0 as usize, band)
-                    } else { None };
-                    let v10 = if x1 >= 0 && y1 >= 0 && (x1 as usize) < eff_width {
-                        sample_pixel(x1 as usize, y0 as usize, band)
-                    } else { None };
-                    let v01 = if x0 >= 0 && y1 >= 0 && (y1 as usize) < eff_height {
-                        sample_pixel(x0 as usize, y1 as usize, band)
-                    } else { None };
-                    let v11 = if x1 >= 0 && y1 >= 0 && (x1 as usize) < eff_width && (y1 as usize) < eff_height {
-                        sample_pixel(x1 as usize, y1 as usize, band)
-                    } else { None };
-
-                    // Bilinear interpolation with fallback to available values
-                    let result = match (v00, v10, v01, v11) {
-                        // All four available - full bilinear
-                        (Some(a), Some(b), Some(c), Some(d)) => {
-                            let top = a * (1.0 - fx) + b * fx;
-                            let bottom = c * (1.0 - fx) + d * fx;
-                            Some(top * (1.0 - fy) + bottom * fy)
-                        }
-                        // Only top row available
-                        (Some(a), Some(b), None, None) => Some(a * (1.0 - fx) + b * fx),
-                        // Only bottom row available
-                        (None, None, Some(c), Some(d)) => Some(c * (1.0 - fx) + d * fx),
-                        // Only left column available
-                        (Some(a), None, Some(c), None) => Some(a * (1.0 - fy) + c * fy),
-                        // Only right column available
-                        (None, Some(b), None, Some(d)) => Some(b * (1.0 - fy) + d * fy),
-                        // Corners only - fall back to nearest available
-                        (Some(a), None, None, None) => Some(a),
-                        (None, Some(b), None, None) => Some(b),
-                        (None, None, Some(c), None) => Some(c),
-                        (None, None, None, Some(d)) => Some(d),
-                        // Nothing available
-                        _ => None,
-                    };
-
-                    if let Some(value) = result {
+                    if let Some(value) = sample_pixel(src_px_int as usize, src_py_int as usize, band) {
                         pixel_data[out_idx + band] = value;
                     }
                 }
