@@ -227,6 +227,19 @@ impl LocalTileReader {
     }
 }
 
+/// Pre-generated transparent 256x256 PNG tile (cached to avoid regenerating)
+static TRANSPARENT_TILE: once_cell::sync::Lazy<Vec<u8>> = once_cell::sync::Lazy::new(|| {
+    use image::{RgbaImage, codecs::png::PngEncoder, ColorType, ImageEncoder};
+    use std::io::Cursor;
+
+    let img = RgbaImage::new(256, 256); // All pixels default to transparent (0,0,0,0)
+    let mut png_data = Vec::new();
+    PngEncoder::new(Cursor::new(&mut png_data))
+        .write_image(img.as_raw(), 256, 256, ColorType::Rgba8.into())
+        .expect("Failed to encode transparent tile");
+    png_data
+});
+
 #[async_trait]
 impl TileReader for LocalTileReader {
     async fn list_layers(&self) -> Vec<Layer> {
@@ -255,12 +268,29 @@ impl TileReader for LocalTileReader {
             .and_then(|styles| styles.first())
             .ok_or_else(|| format!("Layer not found: '{}'", layer))?;
 
-        let extent: GeometryExtent = tile_bounds_to_3857(z, x, y);
+        let tile_extent: GeometryExtent = tile_bounds_to_3857(z, x, y);
 
-        // always hand off to process_cog; it will do the extent-check itself
-        let png_data = process_cog(layer_obj.path.clone(), extent, layer_obj.clone(), tile_size)
-            .await
-            .map_err(|e| e.to_string())?;
+        // OPTIMIZATION: Early rejection if tile doesn't intersect layer extent
+        // This avoids loading COG data for tiles that are completely outside the layer
+        if let Some(layer_extent_3857) = layer_obj.cached_geometry.get(&3857) {
+            if !layer_extent_3857.extent.intersects(&tile_extent) {
+                // Return pre-cached transparent tile without any processing
+                return Ok(TileResponse {
+                    content_type: "image/png".into(),
+                    bytes: TRANSPARENT_TILE.clone(),
+                });
+            }
+        }
+
+        // Process the tile - pass layer by reference to avoid cloning
+        let png_data = process_cog(
+            layer_obj.path.clone(),
+            tile_extent,
+            layer_obj.clone(), // TODO: Refactor process_cog to take &Layer
+            tile_size,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
 
         Ok(TileResponse {
             content_type: "image/png".into(),
