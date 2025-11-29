@@ -24,6 +24,9 @@ const TAG_BITS_PER_SAMPLE: u16 = 258;
 const TAG_COMPRESSION: u16 = 259;
 const TAG_SAMPLES_PER_PIXEL: u16 = 277;
 const TAG_PREDICTOR: u16 = 317;
+const TAG_ROWS_PER_STRIP: u16 = 278;
+const TAG_STRIP_OFFSETS: u16 = 273;
+const TAG_STRIP_BYTE_COUNTS: u16 = 279;
 const TAG_TILE_WIDTH: u16 = 322;
 const TAG_TILE_LENGTH: u16 = 323;
 const TAG_TILE_OFFSETS: u16 = 324;
@@ -199,6 +202,10 @@ pub struct CogMetadata {
 
     /// Number of tiles down
     pub tiles_down: usize,
+
+    /// Whether this is a tiled TIFF (true) or stripped TIFF (false)
+    /// Tiled TIFFs are COG-optimized, stripped TIFFs are not
+    pub is_tiled: bool,
 
     /// Geographic transform
     pub geo_transform: GeoTransform,
@@ -661,9 +668,6 @@ fn parse_ifd(
     let height = get_tag_value(&tags, TAG_IMAGE_LENGTH, little_endian)
         .ok_or("Missing ImageLength tag")? as usize;
 
-    let tile_width = get_tag_value(&tags, TAG_TILE_WIDTH, little_endian).unwrap_or(width as u32) as usize;
-    let tile_height = get_tag_value(&tags, TAG_TILE_LENGTH, little_endian).unwrap_or(height as u32) as usize;
-
     let bits_per_sample = get_tag_value(&tags, TAG_BITS_PER_SAMPLE, little_endian).unwrap_or(8) as u16;
     let sample_format = get_tag_value(&tags, TAG_SAMPLE_FORMAT, little_endian).unwrap_or(1) as u16;
     let bands = get_tag_value(&tags, TAG_SAMPLES_PER_PIXEL, little_endian).unwrap_or(1) as usize;
@@ -676,29 +680,72 @@ fn parse_ifd(
     let compression = Compression::from_tag(compression_val)
         .ok_or_else(|| format!("Unsupported compression: {}", compression_val))?;
 
-    // Calculate tile grid
-    let tiles_across = (width + tile_width - 1) / tile_width;
-    let tiles_down = (height + tile_height - 1) / tile_height;
-    let total_tiles = tiles_across * tiles_down;
+    // Detect if tiled or stripped TIFF
+    let has_tile_tags = tags.contains_key(&TAG_TILE_OFFSETS);
+    let has_strip_tags = tags.contains_key(&TAG_STRIP_OFFSETS);
+    let is_tiled = has_tile_tags;
 
-    // Read tile offsets and byte counts (may require additional range requests)
-    let tile_offsets = read_tag_array_u64(
-        &tags,
-        TAG_TILE_OFFSETS,
-        reader,
-        ifd_offset,
-        little_endian,
-        total_tiles,
-    )?;
+    // For tiled: use tile dimensions; for stripped: tile_width = image width, tile_height = rows_per_strip
+    let (tile_width, tile_height, tiles_across, tiles_down, tile_offsets, tile_byte_counts) = if is_tiled {
+        // Tiled TIFF (COG-optimized)
+        let tw = get_tag_value(&tags, TAG_TILE_WIDTH, little_endian).unwrap_or(width as u32) as usize;
+        let th = get_tag_value(&tags, TAG_TILE_LENGTH, little_endian).unwrap_or(height as u32) as usize;
+        let ta = (width + tw - 1) / tw;
+        let td = (height + th - 1) / th;
+        let total_tiles = ta * td;
 
-    let tile_byte_counts = read_tag_array_u64(
-        &tags,
-        TAG_TILE_BYTE_COUNTS,
-        reader,
-        ifd_offset,
-        little_endian,
-        total_tiles,
-    )?;
+        let offsets = read_tag_array_u64(
+            &tags,
+            TAG_TILE_OFFSETS,
+            reader,
+            ifd_offset,
+            little_endian,
+            total_tiles,
+        )?;
+
+        let byte_counts = read_tag_array_u64(
+            &tags,
+            TAG_TILE_BYTE_COUNTS,
+            reader,
+            ifd_offset,
+            little_endian,
+            total_tiles,
+        )?;
+
+        (tw, th, ta, td, offsets, byte_counts)
+    } else if has_strip_tags {
+        // Stripped TIFF (not COG-optimized)
+        // Treat strips as "tiles" that span the full image width
+        let rows_per_strip = get_tag_value(&tags, TAG_ROWS_PER_STRIP, little_endian)
+            .unwrap_or(height as u32) as usize;
+        let tw = width; // Strip width = image width
+        let th = rows_per_strip;
+        let ta = 1; // Only 1 "tile" across (strips span full width)
+        let td = (height + rows_per_strip - 1) / rows_per_strip;
+        let total_strips = td;
+
+        let offsets = read_tag_array_u64(
+            &tags,
+            TAG_STRIP_OFFSETS,
+            reader,
+            ifd_offset,
+            little_endian,
+            total_strips,
+        )?;
+
+        let byte_counts = read_tag_array_u64(
+            &tags,
+            TAG_STRIP_BYTE_COUNTS,
+            reader,
+            ifd_offset,
+            little_endian,
+            total_strips,
+        )?;
+
+        (tw, th, ta, td, offsets, byte_counts)
+    } else {
+        return Err("TIFF has neither tile nor strip tags".into());
+    };
 
     // Read geo transform
     let pixel_scale = read_tag_f64_array(&tags, TAG_MODEL_PIXEL_SCALE, reader, ifd_offset, little_endian, 3)?;
@@ -732,6 +779,7 @@ fn parse_ifd(
         tile_byte_counts,
         tiles_across,
         tiles_down,
+        is_tiled,
         geo_transform,
         crs_code,
         stats_min,

@@ -1367,14 +1367,13 @@ mod tests {
     // COMPRESSION HANDLING TESTS
     // ========================================================================
 
-    /// Test that we handle different compression types
-    /// Note: Only tests tiled COG files - stripped TIFFs are not COG-compliant
+    /// Test that we handle different compression types and TIFF structures
     #[test]
     fn test_compression_handling() {
-        // Only test actual COG files (tiled structure required)
-        // Stripped TIFFs (like gray_3857.tif with Block=20966x1) are not COGs
+        // Test both tiled COGs and stripped TIFFs
         let test_files = [
-            ("data/grayscale/gray_3857-cog.tif", "LZW compressed COG"),
+            ("data/grayscale/gray_3857-cog.tif", "LZW compressed COG (tiled)"),
+            ("data/test/gray_3857.tif", "Uncompressed GeoTIFF (stripped)"),
         ];
 
         for (path, description) in test_files {
