@@ -10,10 +10,10 @@ use crate::reader::tiff_utils::{
     read_tag_f64_triplet, read_tag_string_from_ifd, read_tag_u32, read_tag_u32_vec,
     read_tag_u32_vec_optional, read_tiff_header,
 };
-use std::collections::HashMap;
+use crate::reader::tile_cache::{self, TileKind};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 /// Streamed LZW raster source backed by on-demand tile decoding.
@@ -24,13 +24,13 @@ pub struct LzwRasterSource {
     tile_width: usize,
     tile_length: usize,
     tiles_across: usize,
-    offsets: Vec<u64>,
-    byte_counts: Vec<u32>,
+    tiles_down: usize,
+    offsets: Arc<Vec<u64>>,
+    byte_counts: Arc<Vec<u32>>,
     samples_per_pixel: usize,
     predictor: u32,
     bytes_per_sample: usize,
     is_tiled: bool,
-    cache: Mutex<HashMap<usize, Arc<Vec<f32>>>>,
     model_pixel_scale: Option<[f64; 3]>,
     model_tiepoint: Option<[f64; 6]>,
     min_max: Mutex<Option<(f32, f32)>>,
@@ -171,7 +171,7 @@ impl LzwRasterSource {
             header.little_endian,
         )?;
 
-        let (tile_width, tile_length, offsets, byte_counts, tiles_across, is_tiled) =
+        let (tile_width, tile_length, offsets, byte_counts, tiles_across, tiles_down, is_tiled) =
             if let (Some(offsets), Some(counts)) = (tile_offsets, tile_byte_counts) {
                 let tile_width = read_tag_u32(
                     &mut file,
@@ -204,14 +204,17 @@ impl LzwRasterSource {
                     .into());
                 }
 
-                let offsets_u64 = offsets.into_iter().map(|value| value as u64).collect();
+                let offsets_u64: Arc<Vec<u64>> =
+                    Arc::new(offsets.into_iter().map(|value| value as u64).collect());
+                let counts_arc: Arc<Vec<u32>> = Arc::new(counts);
 
                 (
                     tile_width,
                     tile_length,
                     offsets_u64,
-                    counts,
+                    counts_arc,
                     tiles_across,
+                    tiles_down,
                     true,
                 )
             } else {
@@ -239,16 +242,21 @@ impl LzwRasterSource {
                     header.little_endian,
                 )? as usize;
 
-                let offsets_u64 = strip_offsets
-                    .into_iter()
-                    .map(|value| value as u64)
-                    .collect();
+                let offsets_u64: Arc<Vec<u64>> = Arc::new(
+                    strip_offsets
+                        .into_iter()
+                        .map(|value| value as u64)
+                        .collect(),
+                );
+                let counts_arc: Arc<Vec<u32>> = Arc::new(strip_byte_counts);
+                let tiles_down = counts_arc.len();
                 (
                     image_width,
                     rows_per_strip.min(image_length),
                     offsets_u64,
-                    strip_byte_counts,
+                    counts_arc,
                     1,
+                    tiles_down,
                     false,
                 )
             };
@@ -286,13 +294,13 @@ impl LzwRasterSource {
             tile_width,
             tile_length,
             tiles_across,
+            tiles_down,
             offsets,
             byte_counts,
             samples_per_pixel,
             predictor,
             bytes_per_sample,
             is_tiled,
-            cache: Mutex::new(HashMap::new()),
             model_pixel_scale,
             model_tiepoint,
             min_max: Mutex::new(metadata_stats),
@@ -316,11 +324,7 @@ impl LzwRasterSource {
         let mut max_value = f32::NEG_INFINITY;
 
         for tile_index in 0..self.offsets.len() {
-            let tile_data = if let Some(cached) = self.cache.lock().unwrap().get(&tile_index) {
-                cached.clone()
-            } else {
-                self.load_tile(tile_index)?
-            };
+            let tile_data = self.fetch_tile(tile_index)?;
             for &value in tile_data.iter() {
                 if value.is_nan() {
                     continue;
@@ -345,55 +349,88 @@ impl LzwRasterSource {
     }
 
     fn fetch_tile(&self, tile_index: usize) -> AnyResult<Arc<Vec<f32>>> {
-        if let Some(cached) = self.cache.lock().unwrap().get(&tile_index) {
-            return Ok(cached.clone());
+        if let Some(cached) = tile_cache::get(&self.path, TileKind::Lzw, tile_index) {
+            return Ok(cached);
         }
 
-        let arc = self.load_tile(tile_index)?;
-        self.cache.lock().unwrap().insert(tile_index, arc.clone());
-        Ok(arc)
+        let tile = self.load_tile(tile_index)?;
+        tile_cache::insert(&self.path, TileKind::Lzw, tile_index, Arc::clone(&tile));
+        self.prefetch_neighbors(tile_index);
+        Ok(tile)
     }
 
     fn load_tile(&self, tile_index: usize) -> AnyResult<Arc<Vec<f32>>> {
-        if tile_index >= self.offsets.len() {
-            return Err(format!("Tile index {} out of range", tile_index).into());
+        decompress_lzw_tile(
+            self.path.as_path(),
+            &self.offsets,
+            &self.byte_counts,
+            self.tile_width,
+            self.tile_length,
+            self.samples_per_pixel,
+            self.predictor,
+            self.bytes_per_sample,
+            tile_index,
+        )
+    }
+
+    fn neighbor_indices(&self, tile_index: usize) -> Vec<usize> {
+        let tile_col = tile_index % self.tiles_across;
+        let tile_row = tile_index / self.tiles_across;
+        let mut neighbors = Vec::with_capacity(4);
+
+        if tile_col > 0 {
+            neighbors.push(tile_index - 1);
+        }
+        if tile_col + 1 < self.tiles_across {
+            neighbors.push(tile_index + 1);
+        }
+        if tile_row > 0 {
+            neighbors.push(tile_index - self.tiles_across);
+        }
+        if tile_row + 1 < self.tiles_down {
+            neighbors.push(tile_index + self.tiles_across);
         }
 
-        let offset = self.offsets[tile_index];
-        let byte_count = self.byte_counts[tile_index] as usize;
+        neighbors
+    }
 
-        let mut file = File::open(&self.path)?;
-        file.seek(SeekFrom::Start(offset))?;
-        let mut compressed_data = vec![0u8; byte_count];
-        file.read_exact(&mut compressed_data)?;
+    fn prefetch_neighbors(&self, tile_index: usize) {
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            let neighbors = self.neighbor_indices(tile_index);
+            let config = LzwPrefetchConfig {
+                path: self.path.clone(),
+                offsets: Arc::clone(&self.offsets),
+                byte_counts: Arc::clone(&self.byte_counts),
+                tile_width: self.tile_width,
+                tile_length: self.tile_length,
+                samples_per_pixel: self.samples_per_pixel,
+                predictor: self.predictor,
+                bytes_per_sample: self.bytes_per_sample,
+            };
 
-        let expected_tile_bytes = self
-            .tile_width
-            .checked_mul(self.tile_length)
-            .and_then(|value| value.checked_mul(self.samples_per_pixel))
-            .and_then(|value| value.checked_mul(self.bytes_per_sample))
-            .ok_or_else(|| "Tile byte size overflow".to_string())?;
+            for neighbor in neighbors {
+                if tile_cache::contains(&config.path, TileKind::Lzw, neighbor) {
+                    continue;
+                }
 
-        let (mut decompressed, actual_bytes) =
-            try_lzw_decompress(&compressed_data, expected_tile_bytes)?;
-
-        if self.predictor == 2 {
-            apply_horizontal_predictor_u8(
-                &mut decompressed,
-                self.tile_width,
-                self.tile_length,
-                self.samples_per_pixel,
-            );
+                let cfg = config.clone();
+                handle.spawn_blocking(move || {
+                    if let Ok(tile) = decompress_lzw_tile(
+                        cfg.path.as_path(),
+                        cfg.offsets.as_ref(),
+                        cfg.byte_counts.as_ref(),
+                        cfg.tile_width,
+                        cfg.tile_length,
+                        cfg.samples_per_pixel,
+                        cfg.predictor,
+                        cfg.bytes_per_sample,
+                        neighbor,
+                    ) {
+                        tile_cache::insert(&cfg.path, TileKind::Lzw, neighbor, tile);
+                    }
+                });
+            }
         }
-
-        let mut values =
-            vec![f32::NAN; self.tile_width * self.tile_length * self.samples_per_pixel];
-        let valid_samples = actual_bytes.min(decompressed.len());
-        for idx in 0..valid_samples {
-            values[idx] = decompressed[idx] as f32;
-        }
-
-        Ok(Arc::new(values))
     }
 
     fn tile_dimensions(&self, tile_index: usize) -> (usize, usize) {
@@ -493,4 +530,66 @@ fn apply_horizontal_predictor_u8(
             }
         }
     }
+}
+
+#[derive(Clone)]
+struct LzwPrefetchConfig {
+    path: PathBuf,
+    offsets: Arc<Vec<u64>>,
+    byte_counts: Arc<Vec<u32>>,
+    tile_width: usize,
+    tile_length: usize,
+    samples_per_pixel: usize,
+    predictor: u32,
+    bytes_per_sample: usize,
+}
+
+fn decompress_lzw_tile(
+    path: &Path,
+    offsets: &[u64],
+    byte_counts: &[u32],
+    tile_width: usize,
+    tile_length: usize,
+    samples_per_pixel: usize,
+    predictor: u32,
+    bytes_per_sample: usize,
+    tile_index: usize,
+) -> AnyResult<Arc<Vec<f32>>> {
+    if tile_index >= offsets.len() {
+        return Err(format!("Tile index {} out of range", tile_index).into());
+    }
+
+    let offset = offsets[tile_index];
+    let byte_count = byte_counts[tile_index] as usize;
+
+    let mut file = File::open(path)?;
+    file.seek(SeekFrom::Start(offset))?;
+    let mut compressed_data = vec![0u8; byte_count];
+    file.read_exact(&mut compressed_data)?;
+
+    let expected_tile_bytes = tile_width
+        .checked_mul(tile_length)
+        .and_then(|value| value.checked_mul(samples_per_pixel))
+        .and_then(|value| value.checked_mul(bytes_per_sample))
+        .ok_or_else(|| "Tile byte size overflow".to_string())?;
+
+    let (mut decompressed, actual_bytes) =
+        try_lzw_decompress(&compressed_data, expected_tile_bytes)?;
+
+    if predictor == 2 {
+        apply_horizontal_predictor_u8(
+            &mut decompressed,
+            tile_width,
+            tile_length,
+            samples_per_pixel,
+        );
+    }
+
+    let mut values = vec![f32::NAN; tile_width * tile_length * samples_per_pixel];
+    let valid_samples = actual_bytes.min(decompressed.len()).min(values.len());
+    for idx in 0..valid_samples {
+        values[idx] = decompressed[idx] as f32;
+    }
+
+    Ok(Arc::new(values))
 }

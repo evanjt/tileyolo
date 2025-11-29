@@ -3,16 +3,12 @@ use crate::reader::tiff_utils::{
     AnyResult, TAG_GDAL_METADATA, parse_gdal_metadata_stats, read_ifd, read_tag_string_from_ifd,
     read_tiff_header,
 };
-use std::collections::HashMap;
+use crate::reader::tile_cache::{self, TileKind};
 use std::fs::File;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tiff::decoder::{Decoder, DecodingResult, Limits};
 use tiff::tags::Tag;
-
-struct ChunkCacheEntry {
-    data: Vec<f32>,
-}
 
 pub struct TiffChunkedRasterSource {
     path: PathBuf,
@@ -23,7 +19,6 @@ pub struct TiffChunkedRasterSource {
     chunks_across: usize,
     chunks_down: usize,
     samples_per_pixel: usize,
-    cache: Mutex<HashMap<usize, Arc<ChunkCacheEntry>>>,
     pixel_scale: Option<[f64; 3]>,
     tiepoint: Option<[f64; 6]>,
     min_max: Mutex<Option<(f32, f32)>>,
@@ -114,7 +109,6 @@ impl TiffChunkedRasterSource {
             chunks_across,
             chunks_down,
             samples_per_pixel,
-            cache: Mutex::new(HashMap::new()),
             pixel_scale,
             tiepoint,
             min_max: Mutex::new(min_max_hint),
@@ -140,56 +134,81 @@ impl TiffChunkedRasterSource {
         (width, height)
     }
 
-    fn open_decoder(&self) -> AnyResult<Decoder<File>> {
-        let decoder = Decoder::new(File::open(&self.path)?)?;
-        Ok(decoder.with_limits(Limits::unlimited()))
-    }
+    fn neighbor_indices(&self, chunk_index: usize) -> Vec<usize> {
+        let chunk_col = chunk_index % self.chunks_across;
+        let chunk_row = chunk_index / self.chunks_across;
+        let mut neighbors = Vec::with_capacity(4);
 
-    fn load_chunk(&self, chunk_index: usize) -> AnyResult<Arc<ChunkCacheEntry>> {
-        let mut decoder = self.open_decoder()?;
-        let data_dims = decoder.chunk_data_dimensions(chunk_index as u32);
-        let actual_width = data_dims.0 as usize;
-        let actual_height = data_dims.1 as usize;
-
-        let decoded = decoder.read_chunk(chunk_index as u32)?;
-        drop(decoder);
-
-        let values = convert_decoding_result(decoded);
-        let expected_len = actual_width * actual_height * self.samples_per_pixel;
-        if values.len() != expected_len {
-            return Err(format!(
-                "Decoded chunk has unexpected length {} (expected {})",
-                values.len(),
-                expected_len
-            )
-            .into());
+        if chunk_col > 0 {
+            neighbors.push(chunk_index - 1);
+        }
+        if chunk_col + 1 < self.chunks_across {
+            neighbors.push(chunk_index + 1);
+        }
+        if chunk_row > 0 {
+            neighbors.push(chunk_index - self.chunks_across);
+        }
+        if chunk_row + 1 < self.chunks_down {
+            neighbors.push(chunk_index + self.chunks_across);
         }
 
-        let mut padded =
-            vec![f32::NAN; self.chunk_width * self.chunk_height * self.samples_per_pixel];
+        neighbors
+    }
 
-        for row in 0..actual_height {
-            for col in 0..actual_width {
-                let base_src = (row * actual_width + col) * self.samples_per_pixel;
-                let base_dst = (row * self.chunk_width + col) * self.samples_per_pixel;
-                padded[base_dst..base_dst + self.samples_per_pixel]
-                    .copy_from_slice(&values[base_src..base_src + self.samples_per_pixel]);
+    fn prefetch_neighbors(&self, chunk_index: usize) {
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            let neighbors = self.neighbor_indices(chunk_index);
+            let config = ChunkPrefetchConfig {
+                path: self.path.clone(),
+                chunk_width: self.chunk_width,
+                chunk_height: self.chunk_height,
+                samples_per_pixel: self.samples_per_pixel,
+            };
+
+            for neighbor in neighbors {
+                if tile_cache::contains(&config.path, TileKind::Chunked, neighbor) {
+                    continue;
+                }
+
+                let cfg = config.clone();
+                handle.spawn_blocking(move || {
+                    if let Ok(tile) = load_chunk_with_config(
+                        cfg.path.as_path(),
+                        neighbor,
+                        cfg.chunk_width,
+                        cfg.chunk_height,
+                        cfg.samples_per_pixel,
+                    ) {
+                        tile_cache::insert(&cfg.path, TileKind::Chunked, neighbor, tile);
+                    }
+                });
             }
         }
-
-        Ok(Arc::new(ChunkCacheEntry { data: padded }))
     }
 
-    fn fetch_chunk(&self, chunk_index: usize) -> AnyResult<Arc<ChunkCacheEntry>> {
-        if let Some(entry) = self.cache.lock().unwrap().get(&chunk_index) {
-            return Ok(entry.clone());
+    fn load_chunk(&self, chunk_index: usize) -> AnyResult<Arc<Vec<f32>>> {
+        load_chunk_with_config(
+            self.path.as_path(),
+            chunk_index,
+            self.chunk_width,
+            self.chunk_height,
+            self.samples_per_pixel,
+        )
+    }
+
+    fn fetch_chunk(&self, chunk_index: usize) -> AnyResult<Arc<Vec<f32>>> {
+        if let Some(entry) = tile_cache::get(&self.path, TileKind::Chunked, chunk_index) {
+            return Ok(entry);
         }
 
         let entry = self.load_chunk(chunk_index)?;
-        self.cache
-            .lock()
-            .unwrap()
-            .insert(chunk_index, entry.clone());
+        tile_cache::insert(
+            &self.path,
+            TileKind::Chunked,
+            chunk_index,
+            Arc::clone(&entry),
+        );
+        self.prefetch_neighbors(chunk_index);
         Ok(entry)
     }
 
@@ -211,7 +230,7 @@ impl TiffChunkedRasterSource {
 
         for chunk_index in 0..(self.chunks_across * self.chunks_down) {
             let chunk = self.fetch_chunk(chunk_index)?;
-            for &value in &chunk.data {
+            for &value in chunk.iter() {
                 if value.is_nan() {
                     continue;
                 }
@@ -271,7 +290,7 @@ impl RasterSource for TiffChunkedRasterSource {
         };
 
         let offset = (within_y * self.chunk_width + within_x) * self.samples_per_pixel + band;
-        chunk.data.get(offset).copied()
+        chunk.get(offset).copied()
     }
 }
 
@@ -289,4 +308,51 @@ fn convert_decoding_result(result: DecodingResult) -> Vec<f32> {
         DecodingResult::U64(data) => data.into_iter().map(|v| v as f32).collect(),
         DecodingResult::I64(data) => data.into_iter().map(|v| v as f32).collect(),
     }
+}
+
+#[derive(Clone)]
+struct ChunkPrefetchConfig {
+    path: PathBuf,
+    chunk_width: usize,
+    chunk_height: usize,
+    samples_per_pixel: usize,
+}
+
+fn load_chunk_with_config(
+    path: &Path,
+    chunk_index: usize,
+    chunk_width: usize,
+    chunk_height: usize,
+    samples_per_pixel: usize,
+) -> AnyResult<Arc<Vec<f32>>> {
+    let decoder = Decoder::new(File::open(path)?)?;
+    let mut decoder = decoder.with_limits(Limits::unlimited());
+    let data_dims = decoder.chunk_data_dimensions(chunk_index as u32);
+    let actual_width = data_dims.0 as usize;
+    let actual_height = data_dims.1 as usize;
+
+    let decoded = decoder.read_chunk(chunk_index as u32)?;
+    let values = convert_decoding_result(decoded);
+    let expected_len = actual_width * actual_height * samples_per_pixel;
+    if values.len() != expected_len {
+        return Err(format!(
+            "Decoded chunk has unexpected length {} (expected {})",
+            values.len(),
+            expected_len
+        )
+        .into());
+    }
+
+    let mut padded = vec![f32::NAN; chunk_width * chunk_height * samples_per_pixel];
+
+    for row in 0..actual_height {
+        for col in 0..actual_width {
+            let base_src = (row * actual_width + col) * samples_per_pixel;
+            let base_dst = (row * chunk_width + col) * samples_per_pixel;
+            padded[base_dst..base_dst + samples_per_pixel]
+                .copy_from_slice(&values[base_src..base_src + samples_per_pixel]);
+        }
+    }
+
+    Ok(Arc::new(padded))
 }
