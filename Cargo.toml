@@ -62,3 +62,5 @@ gdal-tests = ["gdal"]
 rand = "0.9.1"
 tempfile = "3.19.1"
 tower = "0.5.2"
+noise = "0.9"
+rayon = "1.10"
