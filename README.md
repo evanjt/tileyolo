@@ -37,6 +37,40 @@ Or use as a library:
 cargo add tileyolo
 ```
 
+### Embedding in Existing Axum Applications
+
+TileYolo can be embedded as a router into your existing axum application:
+
+```rust
+use axum::Router;
+use tileyolo::TileYoloRouter;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    // Build the TileYolo router from a data directory
+    let tiles = TileYoloRouter::from_directory("./geo_data")
+        .await?
+        .into_router();
+
+    // Nest it into your application at any path
+    let app = Router::new()
+        .nest("/geo", tiles)  // Tiles available at /geo/tiles/{layer}/{z}/{x}/{y}
+        .route("/health", axum::routing::get(|| async { "ok" }));
+
+    // Serve with your own server setup
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await?;
+    axum::serve(listener, app).await?;
+    Ok(())
+}
+```
+
+The router provides these endpoints (relative to where you nest it):
+- `GET /tiles/{layer}/{z}/{x}/{y}?style=...` - XYZ tile endpoint (PNG)
+- `GET /layers` - JSON list of available layers with metadata
+- `GET /map` - Interactive web map viewer
+
+Use `into_api_router()` instead of `into_router()` to exclude the `/map` viewer.
+
 #### Dependencies
 
 * GDAL

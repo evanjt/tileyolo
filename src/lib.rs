@@ -29,4 +29,5 @@ mod gdal_validation_tests;
 // mod strict_tests; // TODO: Update to use cog3pio instead of GDAL
 
 pub use config::{Config, Source};
+pub use endpoints::router::TileYoloRouter;
 pub use endpoints::server::TileServer;
