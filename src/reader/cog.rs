@@ -798,6 +798,29 @@ pub fn extract_tile_with_cog_reader(
         }
     }
 
+    // For stripped TIFFs with small tile_height, ensure we sample more rows to catch edge cases
+    // The problem is that rounding during actual pixel sampling may need tiles beyond
+    // what our 9-point sample detected. Add safety margin for small tile heights.
+    if eff_tile_height <= 16 && !needed_tiles.is_empty() {
+        let min_tile = *needed_tiles.iter().min().unwrap();
+        let max_tile = *needed_tiles.iter().max().unwrap();
+
+        // Add one extra tile before and after in the row dimension to handle rounding
+        let min_row = min_tile / eff_tiles_across;
+        let max_row = max_tile / eff_tiles_across;
+
+        // Add safety margin - at least 1 extra row on each end
+        let safe_min_row = min_row.saturating_sub(1);
+        let safe_max_row = (max_row + 1).min(max_tile_count / eff_tiles_across.max(1));
+
+        for row in safe_min_row..=safe_max_row {
+            let idx = row * eff_tiles_across;
+            if idx < max_tile_count {
+                needed_tiles.insert(idx);
+            }
+        }
+    }
+
     // Pre-load all needed tiles into cache (from overview or full resolution)
     let mut tile_cache: HashMap<usize, Vec<f32>> = HashMap::with_capacity(needed_tiles.len());
     for &tile_idx in &needed_tiles {

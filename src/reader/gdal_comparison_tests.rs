@@ -2156,4 +2156,126 @@ mod tests {
         assert!((smin - tmin).abs() < 50.0, "Min values too different: {} vs {}", smin, tmin);
         assert!((smax - tmax).abs() < 50.0, "Max values too different: {} vs {}", smax, tmax);
     }
+
+    #[test]
+    fn test_stripped_vs_tiled_pixel_values() {
+        let stripped_path = "data/test/gray_3857.tif";
+        let tiled_path = "data/grayscale/gray_3857-cog.tif";
+
+        if !Path::new(stripped_path).exists() || !Path::new(tiled_path).exists() {
+            println!("Skipping - files not found");
+            return;
+        }
+
+        // Extract same tile from both files
+        let extent = xyz_tile_bounds(2, 1, 1);
+        println!("XYZ tile (2, 1, 1) extent: minx={:.0}, miny={:.0}, maxx={:.0}, maxy={:.0}",
+            extent.minx, extent.miny, extent.maxx, extent.maxy);
+
+        let stripped = CogReader::open(stripped_path).expect("Failed to open stripped");
+        let tiled = CogReader::open(tiled_path).expect("Failed to open tiled");
+
+        println!("\nStripped reader:");
+        println!("  Dimensions: {}x{}", stripped.metadata.width, stripped.metadata.height);
+        println!("  Tile size: {}x{}", stripped.metadata.tile_width, stripped.metadata.tile_height);
+        println!("  Tiles: {}x{} = {}", stripped.metadata.tiles_across, stripped.metadata.tiles_down,
+            stripped.metadata.tile_offsets.len());
+        println!("  Overviews: {}", stripped.overviews.len());
+
+        println!("\nTiled reader:");
+        println!("  Dimensions: {}x{}", tiled.metadata.width, tiled.metadata.height);
+        println!("  Tile size: {}x{}", tiled.metadata.tile_width, tiled.metadata.tile_height);
+        println!("  Tiles: {}x{} = {}", tiled.metadata.tiles_across, tiled.metadata.tiles_down,
+            tiled.metadata.tile_offsets.len());
+        println!("  Overviews: {}", tiled.overviews.len());
+        for (i, ovr) in tiled.overviews.iter().enumerate() {
+            println!("    Overview {}: {}x{}, scale={}", i, ovr.width, ovr.height, ovr.scale);
+        }
+
+        // Check what overview would be selected
+        let base_scale = stripped.metadata.geo_transform.pixel_scale.unwrap()[0];
+        let extent_src_width = ((extent.maxx - extent.minx) / base_scale).abs() as usize;
+        let extent_src_height = ((extent.maxy - extent.miny) / base_scale).abs() as usize;
+        println!("\nExtent covers {}x{} source pixels at full res", extent_src_width, extent_src_height);
+
+        let stripped_ovr = stripped.best_overview_for_resolution(extent_src_width, extent_src_height);
+        let tiled_ovr = tiled.best_overview_for_resolution(extent_src_width, extent_src_height);
+        println!("Stripped uses overview: {:?}", stripped_ovr);
+        println!("Tiled uses overview: {:?}", tiled_ovr);
+
+        let stripped_tile = extract_tile_with_cog_reader(&stripped, &extent, (256, 256))
+            .expect("Failed stripped extraction");
+        let tiled_tile = extract_tile_with_cog_reader(&tiled, &extent, (256, 256))
+            .expect("Failed tiled extraction");
+
+        // Compare pixel values
+        let mut diff_count = 0;
+        let mut total_diff = 0.0f64;
+        let mut max_diff = 0.0f32;
+
+        for (_i, (s, t)) in stripped_tile.pixels.iter().zip(tiled_tile.pixels.iter()).enumerate() {
+            if s.is_nan() && t.is_nan() {
+                continue;
+            }
+            if s.is_nan() || t.is_nan() {
+                diff_count += 1;
+                continue;
+            }
+            let d = (s - t).abs();
+            if d > 0.0 {
+                diff_count += 1;
+                total_diff += d as f64;
+                if d > max_diff {
+                    max_diff = d;
+                }
+            }
+        }
+
+        let valid_stripped: usize = stripped_tile.pixels.iter().filter(|v| !v.is_nan()).count();
+        let valid_tiled: usize = tiled_tile.pixels.iter().filter(|v| !v.is_nan()).count();
+
+        println!("Stripped: {} valid pixels", valid_stripped);
+        println!("Tiled: {} valid pixels", valid_tiled);
+        println!("Pixels with differences: {}", diff_count);
+        println!("Max difference: {}", max_diff);
+        if diff_count > 0 {
+            println!("Mean difference: {:.2}", total_diff / diff_count as f64);
+        }
+
+        // Sample some actual values
+        println!("\nSample pixel values (index, stripped, tiled):");
+        for i in [0, 1000, 10000, 30000, 60000] {
+            if i < stripped_tile.pixels.len() {
+                println!("  {}: {:.1} vs {:.1}", i, stripped_tile.pixels[i], tiled_tile.pixels[i]);
+            }
+        }
+
+        // Find where NaN values are in stripped vs tiled
+        let mut stripped_nan_rows = std::collections::HashSet::new();
+        let mut tiled_nan_rows = std::collections::HashSet::new();
+        for y in 0..256 {
+            let row_start = y * 256;
+            let row_nan_stripped = (0..256).all(|x| stripped_tile.pixels[row_start + x].is_nan());
+            let row_nan_tiled = (0..256).all(|x| tiled_tile.pixels[row_start + x].is_nan());
+            if row_nan_stripped {
+                stripped_nan_rows.insert(y);
+            }
+            if row_nan_tiled {
+                tiled_nan_rows.insert(y);
+            }
+        }
+        println!("\nRows that are all NaN:");
+        println!("  Stripped: {:?}", stripped_nan_rows);
+        println!("  Tiled: {:?}", tiled_nan_rows);
+
+        // NOTE: The pixel value differences are EXPECTED because:
+        // - Tiled COG uses a pre-computed 1310x1310 overview (scale=16)
+        // - Stripped TIFF reads from full resolution (20966x20966)
+        // The overview pixels were computed with a resampling algorithm during COG creation,
+        // so they naturally differ from direct sampling of full resolution.
+        //
+        // The missing row 255 is a bug we should fix - it's related to how we determine
+        // which tiles/strips to load. With rows_per_strip=1, we need to ensure we load
+        // all rows that map to the output tile, not just the rows at sample points.
+    }
 }
