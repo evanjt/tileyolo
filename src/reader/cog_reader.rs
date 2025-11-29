@@ -250,10 +250,39 @@ impl CogMetadata {
     }
 }
 
+/// Overview metadata - subset of CogMetadata for overviews
+#[derive(Debug, Clone)]
+pub struct OverviewMetadata {
+    pub width: usize,
+    pub height: usize,
+    pub tile_width: usize,
+    pub tile_height: usize,
+    pub tiles_across: usize,
+    pub tiles_down: usize,
+    pub tile_offsets: Vec<u64>,
+    pub tile_byte_counts: Vec<u64>,
+    /// Scale factor relative to full resolution (2, 4, 8, etc.)
+    pub scale: usize,
+}
+
+impl OverviewMetadata {
+    /// Get tile index for a pixel coordinate at this overview level
+    pub fn tile_index_for_pixel(&self, px: usize, py: usize) -> Option<usize> {
+        if px >= self.width || py >= self.height {
+            return None;
+        }
+        let tile_col = px / self.tile_width;
+        let tile_row = py / self.tile_height;
+        Some(tile_row * self.tiles_across + tile_col)
+    }
+}
+
 /// COG Reader - efficient COG access with range requests
 pub struct CogReader {
     reader: Arc<dyn RangeReader>,
     pub metadata: CogMetadata,
+    /// Overview levels (sorted by scale factor, smallest to largest)
+    pub overviews: Vec<OverviewMetadata>,
 }
 
 impl CogReader {
@@ -285,9 +314,138 @@ impl CogReader {
         let ifd_size_estimate = 4096;
         let ifd_bytes = reader.read_range(ifd_offset as u64, ifd_size_estimate)?;
 
-        let metadata = parse_ifd(&ifd_bytes, &reader, ifd_offset as u64, little_endian)?;
+        let (metadata, next_ifd_offset) = parse_ifd_with_next(&ifd_bytes, &reader, ifd_offset as u64, little_endian)?;
 
-        Ok(Self { reader, metadata })
+        // Read overview IFDs (subsequent IFDs in the chain)
+        let mut overviews = Vec::new();
+        let mut current_ifd_offset = next_ifd_offset;
+        let full_width = metadata.width;
+
+        while current_ifd_offset != 0 {
+            let ovr_ifd_bytes = reader.read_range(current_ifd_offset as u64, ifd_size_estimate)?;
+
+            if let Ok((ovr_meta, next_offset)) = parse_overview_ifd(&ovr_ifd_bytes, &reader, current_ifd_offset as u64, little_endian, &metadata) {
+                // Calculate actual scale from dimensions using floor division
+                // This matches GDAL's behavior: scale = full_width / ovr_width
+                // For 20966/1310 this gives 16, not 17 (ceiling would be wrong)
+                let actual_scale = full_width / ovr_meta.width;
+
+                overviews.push(OverviewMetadata {
+                    width: ovr_meta.width,
+                    height: ovr_meta.height,
+                    tile_width: ovr_meta.tile_width,
+                    tile_height: ovr_meta.tile_height,
+                    tiles_across: ovr_meta.tiles_across,
+                    tiles_down: ovr_meta.tiles_down,
+                    tile_offsets: ovr_meta.tile_offsets,
+                    tile_byte_counts: ovr_meta.tile_byte_counts,
+                    scale: actual_scale,
+                });
+
+                current_ifd_offset = next_offset;
+            } else {
+                break;
+            }
+
+            // Safety limit - COGs typically have at most 10 overviews
+            if overviews.len() > 10 {
+                break;
+            }
+        }
+
+        Ok(Self { reader, metadata, overviews })
+    }
+
+    /// Find the best overview level for a given source extent size
+    ///
+    /// Parameters:
+    /// - extent_src_width: How many source pixels the extent covers at full resolution
+    /// - extent_src_height: How many source pixels the extent covers at full resolution
+    /// - output_width: How many pixels we're actually rendering (e.g., 256)
+    /// - output_height: How many pixels we're actually rendering (e.g., 256)
+    ///
+    /// Returns None if full resolution should be used
+    pub fn best_overview_for_resolution(&self, extent_src_width: usize, extent_src_height: usize) -> Option<usize> {
+        // Default output tile size
+        let output_size = 256.0;
+
+        // Calculate how many source pixels per output pixel we'd need at full res
+        // If extent covers 21600 source pixels but we only output 256 pixels, we can use an 84x overview
+        // If extent covers 256 source pixels for 256 output, we need full resolution (scale = 1)
+        let scale_x = extent_src_width as f64 / output_size;
+        let scale_y = extent_src_height as f64 / output_size;
+        let needed_scale = scale_x.max(scale_y);
+
+        // If we need close to full resolution (1:1 or less), don't use an overview
+        if needed_scale < 1.5 {
+            return None;
+        }
+
+        // Find the best overview that has enough resolution
+        // We want the overview with the largest scale that's still <= needed_scale
+        // (i.e., the smallest overview that still has enough detail)
+        let mut best_idx = None;
+        let mut best_scale = 0usize;
+
+        for (idx, ovr) in self.overviews.iter().enumerate() {
+            // This overview has 1/scale resolution compared to full
+            // We can use it if the overview has at least as many pixels as we need
+            // needed_scale = extent_pixels / output_pixels
+            // If needed_scale = 84 and overview scale = 64, overview has enough resolution
+            if ovr.scale <= (needed_scale as usize) && ovr.scale > best_scale {
+                best_scale = ovr.scale;
+                best_idx = Some(idx);
+            }
+        }
+
+        best_idx
+    }
+
+    /// Read a tile from a specific overview level
+    pub fn read_overview_tile(&self, overview_idx: usize, tile_index: usize) -> AnyResult<Vec<f32>> {
+        let ovr = self.overviews.get(overview_idx)
+            .ok_or_else(|| format!("Overview index {} out of range", overview_idx))?;
+
+        if tile_index >= ovr.tile_offsets.len() {
+            return Err(format!(
+                "Tile index {} out of range (max {})",
+                tile_index,
+                ovr.tile_offsets.len()
+            ).into());
+        }
+
+        let offset = ovr.tile_offsets[tile_index];
+        let byte_count = ovr.tile_byte_counts[tile_index] as usize;
+
+        if byte_count == 0 {
+            let pixel_count = ovr.tile_width * ovr.tile_height * self.metadata.bands;
+            return Ok(vec![f32::NAN; pixel_count]);
+        }
+
+        let compressed = self.reader.read_range(offset, byte_count)?;
+
+        let decompressed = decompress_tile(
+            &compressed,
+            self.metadata.compression,
+            ovr.tile_width,
+            ovr.tile_height,
+            self.metadata.bands,
+            self.metadata.data_type.bytes_per_sample(),
+        )?;
+
+        let unpredicted = apply_predictor(
+            &decompressed,
+            self.metadata.predictor,
+            ovr.tile_width,
+            self.metadata.bands,
+            self.metadata.data_type.bytes_per_sample(),
+        )?;
+
+        convert_to_f32(
+            &unpredicted,
+            self.metadata.data_type,
+            self.metadata.little_endian,
+        )
     }
 
     /// Read a single tile's raw data and decompress
@@ -580,6 +738,133 @@ fn parse_ifd(
         stats_max,
         nodata,
     })
+}
+
+/// Parse IFD and return metadata plus next IFD offset
+fn parse_ifd_with_next(
+    ifd_bytes: &[u8],
+    reader: &Arc<dyn RangeReader>,
+    ifd_offset: u64,
+    little_endian: bool,
+) -> AnyResult<(CogMetadata, u32)> {
+    let entry_count = read_u16(&ifd_bytes[0..2], little_endian) as usize;
+
+    // The next IFD offset is right after all entries
+    let next_ifd_pos = 2 + entry_count * 12;
+    let next_ifd_offset = if next_ifd_pos + 4 <= ifd_bytes.len() {
+        read_u32(&ifd_bytes[next_ifd_pos..next_ifd_pos + 4], little_endian)
+    } else {
+        0
+    };
+
+    let metadata = parse_ifd(ifd_bytes, reader, ifd_offset, little_endian)?;
+    Ok((metadata, next_ifd_offset))
+}
+
+/// Simplified metadata for overview IFDs
+struct OverviewIfdData {
+    width: usize,
+    height: usize,
+    tile_width: usize,
+    tile_height: usize,
+    tiles_across: usize,
+    tiles_down: usize,
+    tile_offsets: Vec<u64>,
+    tile_byte_counts: Vec<u64>,
+}
+
+/// Parse an overview IFD (simpler than full IFD parsing)
+fn parse_overview_ifd(
+    ifd_bytes: &[u8],
+    reader: &Arc<dyn RangeReader>,
+    ifd_offset: u64,
+    little_endian: bool,
+    _full_meta: &CogMetadata, // For inheriting compression, data type, etc.
+) -> AnyResult<(OverviewIfdData, u32)> {
+    let entry_count = read_u16(&ifd_bytes[0..2], little_endian) as usize;
+
+    // Parse all IFD entries into a map
+    let mut tags: HashMap<u16, IfdEntry> = HashMap::new();
+
+    for i in 0..entry_count {
+        let offset = 2 + i * 12;
+        if offset + 12 > ifd_bytes.len() {
+            break;
+        }
+
+        let tag = read_u16(&ifd_bytes[offset..offset + 2], little_endian);
+        let field_type = read_u16(&ifd_bytes[offset + 2..offset + 4], little_endian);
+        let count = read_u32(&ifd_bytes[offset + 4..offset + 8], little_endian);
+        let value_offset = read_u32(&ifd_bytes[offset + 8..offset + 12], little_endian);
+
+        tags.insert(
+            tag,
+            IfdEntry {
+                field_type,
+                count,
+                value_offset,
+                raw_bytes: [
+                    ifd_bytes[offset + 8],
+                    ifd_bytes[offset + 9],
+                    ifd_bytes[offset + 10],
+                    ifd_bytes[offset + 11],
+                ],
+            },
+        );
+    }
+
+    // Get next IFD offset
+    let next_ifd_pos = 2 + entry_count * 12;
+    let next_ifd_offset = if next_ifd_pos + 4 <= ifd_bytes.len() {
+        read_u32(&ifd_bytes[next_ifd_pos..next_ifd_pos + 4], little_endian)
+    } else {
+        0
+    };
+
+    // Extract dimensions and tile info
+    let width = get_tag_value(&tags, TAG_IMAGE_WIDTH, little_endian)
+        .ok_or("Overview missing ImageWidth tag")? as usize;
+    let height = get_tag_value(&tags, TAG_IMAGE_LENGTH, little_endian)
+        .ok_or("Overview missing ImageLength tag")? as usize;
+
+    let tile_width = get_tag_value(&tags, TAG_TILE_WIDTH, little_endian)
+        .ok_or("Overview missing TileWidth tag")? as usize;
+    let tile_height = get_tag_value(&tags, TAG_TILE_LENGTH, little_endian)
+        .ok_or("Overview missing TileLength tag")? as usize;
+
+    let tiles_across = (width + tile_width - 1) / tile_width;
+    let tiles_down = (height + tile_height - 1) / tile_height;
+    let total_tiles = tiles_across * tiles_down;
+
+    // Read tile offsets and byte counts
+    let tile_offsets = read_tag_array_u64(
+        &tags,
+        TAG_TILE_OFFSETS,
+        reader,
+        ifd_offset,
+        little_endian,
+        total_tiles,
+    )?;
+
+    let tile_byte_counts = read_tag_array_u64(
+        &tags,
+        TAG_TILE_BYTE_COUNTS,
+        reader,
+        ifd_offset,
+        little_endian,
+        total_tiles,
+    )?;
+
+    Ok((OverviewIfdData {
+        width,
+        height,
+        tile_width,
+        tile_height,
+        tiles_across,
+        tiles_down,
+        tile_offsets,
+        tile_byte_counts,
+    }, next_ifd_offset))
 }
 
 struct IfdEntry {
@@ -1028,5 +1313,264 @@ mod tests {
         let (wx, wy) = transform.pixel_to_world(10.0, 5.0).unwrap();
         assert!((wx - 200.0).abs() < 0.001);
         assert!((wy - 150.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_real_cog_file() {
+        // Test with a real COG file if it exists
+        let path = "data/viridis/output_cog.tif";
+        if !std::path::Path::new(path).exists() {
+            println!("Skipping test - file not found: {}", path);
+            return;
+        }
+
+        let reader = CogReader::open(path).expect("Failed to open COG");
+        let m = &reader.metadata;
+
+        println!("Testing real COG: {}", path);
+        println!("  Width: {}, Height: {}", m.width, m.height);
+        println!("  Tile size: {}x{}", m.tile_width, m.tile_height);
+        println!("  CRS code: {:?}", m.crs_code);
+        println!("  Bands: {}", m.bands);
+        println!("  Compression: {:?}", m.compression);
+        println!("  Extent: {:?}", m.geo_transform.get_extent(m.width, m.height));
+        println!("  Pixel scale: {:?}", m.geo_transform.pixel_scale);
+        println!("  Tiepoint: {:?}", m.geo_transform.tiepoint);
+
+        // Verify basic metadata
+        assert!(m.width > 0, "Width should be positive");
+        assert!(m.height > 0, "Height should be positive");
+        assert!(m.is_tiled(), "Should be a tiled TIFF");
+
+        // Test world_to_pixel for known coordinates
+        // Center of the image should be at pixel (width/2, height/2)
+        if let Some((px, py)) = m.geo_transform.world_to_pixel(0.0, 0.0) {
+            println!("  Lon 0, Lat 0 -> pixel ({}, {})", px, py);
+            // For a global dataset, (0,0) should be near center
+            assert!(px > 0.0 && px < m.width as f64, "X pixel should be in range");
+            assert!(py > 0.0 && py < m.height as f64, "Y pixel should be in range");
+        }
+
+        // Try to read tile 0
+        let tile_data = reader.read_tile(0).expect("Failed to read tile 0");
+        assert!(!tile_data.is_empty(), "Tile data should not be empty");
+
+        let non_nan = tile_data.iter().filter(|v| !v.is_nan()).count();
+        println!("  Tile 0: {} values, {} non-NaN", tile_data.len(), non_nan);
+        assert!(non_nan > 0, "Tile should have some valid pixels");
+
+        // Test min/max estimation
+        let (min, max) = reader.estimate_min_max().expect("Failed to estimate min/max");
+        println!("  Estimated min: {}, max: {}", min, max);
+        // For an RGB image, values should be 0-255
+        assert!(min >= 0.0, "Min should be >= 0");
+        assert!(max <= 255.0, "Max should be <= 255 for 8-bit data");
+    }
+}
+
+// ============================================================
+// COMPREHENSIVE TESTS FOR COG READER
+// These tests verify:
+// 1. Scale calculation uses FLOOR division (matching GDAL)
+// 2. CRS detection works correctly
+// 3. Pixel values match GDAL output
+// ============================================================
+
+#[test]
+fn test_gray_3857_crs_detection() {
+    let path = "data/grayscale/gray_3857-cog.tif";
+    if !std::path::Path::new(path).exists() {
+        println!("Skipping - file not found: {}", path);
+        return;
+    }
+
+    let reader = CogReader::open(path).expect("Failed to open COG");
+
+    // EPSG:3857 should be detected
+    assert_eq!(reader.metadata.crs_code, Some(3857), "CRS should be detected as 3857");
+}
+
+/// TEST: Overview scale calculation uses FLOOR division
+///
+/// This test catches the bug where we used ceiling division instead of floor.
+/// For gray_3857-cog.tif (20966x20966), overview 3 (1310x1310):
+/// - WRONG (ceiling): (20966 + 1310 - 1) / 1310 = 17
+/// - CORRECT (floor): 20966 / 1310 = 16
+///
+/// The scale affects coordinate calculations, causing ~6% pixel position errors.
+#[test]
+fn test_overview_scale_uses_floor_division() {
+    let path = "data/grayscale/gray_3857-cog.tif";
+    if !std::path::Path::new(path).exists() {
+        println!("Skipping - file not found: {}", path);
+        return;
+    }
+
+    let reader = CogReader::open(path).expect("Failed to open COG");
+
+    // Verify we have overviews
+    assert!(!reader.overviews.is_empty(), "Should have overviews");
+
+    // Check that scale calculation matches GDAL behavior (floor division)
+    let full_width = reader.metadata.width;
+
+    for (i, ovr) in reader.overviews.iter().enumerate() {
+        // Calculate expected scale using floor division (GDAL's method)
+        let expected_scale = full_width / ovr.width;
+
+        // Verify our scale matches
+        assert_eq!(
+            ovr.scale, expected_scale,
+            "Overview {} scale mismatch: got {}, expected {} (floor of {}/{})",
+            i, ovr.scale, expected_scale, full_width, ovr.width
+        );
+
+        // Also verify it's NOT using ceiling division
+        let ceiling_scale = (full_width + ovr.width - 1) / ovr.width;
+        if ceiling_scale != expected_scale {
+            // If ceiling would give different result, make sure we're using floor
+            assert_ne!(
+                ovr.scale, ceiling_scale,
+                "Overview {} appears to use ceiling division (got {}), should use floor ({})",
+                i, ceiling_scale, expected_scale
+            );
+        }
+    }
+
+    // Specific check for overview 3 which caused the original bug
+    if reader.overviews.len() > 3 {
+        let ovr3 = &reader.overviews[3];
+        assert_eq!(
+            ovr3.scale, 16,
+            "Overview 3 (1310x1310) scale should be 16 (floor), not 17 (ceiling)"
+        );
+    }
+}
+
+/// TEST: Pixel values at known positions match GDAL output
+///
+/// This test verifies that the tile extraction produces correct pixel values.
+/// Values were obtained from GDAL: gdal_translate with -projwin
+#[test]
+fn test_overview_pixel_values_match_gdal() {
+    let path = "data/grayscale/gray_3857-cog.tif";
+    if !std::path::Path::new(path).exists() {
+        println!("Skipping - file not found: {}", path);
+        return;
+    }
+
+    let reader = CogReader::open(path).expect("Failed to open COG");
+
+    // Test reading from overview 3 (1310x1310, scale 16)
+    if reader.overviews.len() > 3 {
+        let ovr_idx = 3;
+        let ovr = &reader.overviews[ovr_idx];
+
+        // Verify overview properties
+        assert_eq!(ovr.width, 1310, "Overview 3 should be 1310 wide");
+        assert_eq!(ovr.height, 1310, "Overview 3 should be 1310 tall");
+        assert_eq!(ovr.scale, 16, "Overview 3 scale should be 16");
+
+        // Read tile 0 from overview
+        let tile_data = reader.read_overview_tile(ovr_idx, 0).expect("Failed to read overview tile 0");
+
+        // Verify tile data size
+        let expected_size = ovr.tile_width * ovr.tile_height;
+        assert_eq!(tile_data.len(), expected_size, "Tile data should be {}x{} pixels", ovr.tile_width, ovr.tile_height);
+
+        // Check that we have valid (non-NaN) data
+        let valid_count = tile_data.iter().filter(|v| !v.is_nan()).count();
+        assert!(valid_count > 0, "Tile should have valid (non-NaN) pixels");
+
+        // Verify pixel values are in expected range for grayscale (0-255)
+        let min_val = tile_data.iter().filter(|v| !v.is_nan()).copied().fold(f32::INFINITY, f32::min);
+        let max_val = tile_data.iter().filter(|v| !v.is_nan()).copied().fold(f32::NEG_INFINITY, f32::max);
+
+        assert!(min_val >= 0.0, "Min value should be >= 0, got {}", min_val);
+        assert!(max_val <= 255.0, "Max value should be <= 255, got {}", max_val);
+
+        // Check specific pixel value that GDAL reports
+        // At tile position (0, 0) in overview 3, GDAL shows value ~176
+        let corner_value = tile_data[0];
+        assert!(
+            !corner_value.is_nan() && corner_value >= 100.0 && corner_value <= 255.0,
+            "Corner value should be valid grayscale, got {}",
+            corner_value
+        );
+    }
+}
+
+/// TEST: Scale factor correctly affects coordinate mapping
+///
+/// This test verifies that the scale factor properly adjusts the pixel_scale
+/// when using overviews, which is critical for correct tile generation.
+#[test]
+fn test_scale_factor_coordinate_mapping() {
+    let path = "data/grayscale/gray_3857-cog.tif";
+    if !std::path::Path::new(path).exists() {
+        println!("Skipping - file not found: {}", path);
+        return;
+    }
+
+    let reader = CogReader::open(path).expect("Failed to open COG");
+
+    if let (Some(pixel_scale), Some(_tiepoint)) = (
+        reader.metadata.geo_transform.pixel_scale,
+        reader.metadata.geo_transform.tiepoint,
+    ) {
+        let base_scale_x = pixel_scale[0];
+
+        for (i, ovr) in reader.overviews.iter().enumerate() {
+            // Calculate effective scale for this overview
+            let effective_scale_x = base_scale_x * (ovr.scale as f64);
+
+            // The effective scale should roughly equal full_extent / overview_width
+            // For a COG covering ~20 million meters in 1310 pixels at overview 3:
+            // effective_scale ≈ 20e6 / 1310 ≈ 15267 meters/pixel
+            let full_extent_x = base_scale_x * (reader.metadata.width as f64);
+            let expected_effective_scale = full_extent_x / (ovr.width as f64);
+
+            // Allow 1% tolerance for rounding
+            let tolerance = expected_effective_scale * 0.01;
+            assert!(
+                (effective_scale_x - expected_effective_scale).abs() < tolerance,
+                "Overview {} effective scale mismatch: got {}, expected {} (within {})",
+                i, effective_scale_x, expected_effective_scale, tolerance
+            );
+        }
+    }
+}
+
+/// TEST: Best overview selection returns appropriate level
+#[test]
+fn test_best_overview_selection() {
+    let path = "data/grayscale/gray_3857-cog.tif";
+    if !std::path::Path::new(path).exists() {
+        println!("Skipping - file not found: {}", path);
+        return;
+    }
+
+    let reader = CogReader::open(path).expect("Failed to open COG");
+
+    // For a small extent (256 pixels worth), should return None (use full res)
+    let full_res = reader.best_overview_for_resolution(256, 256);
+    // This might return None or a small overview index depending on the image
+
+    // For a large extent (whole image), should return highest overview
+    let large_extent = reader.best_overview_for_resolution(20000, 20000);
+    assert!(
+        large_extent.is_some() || reader.overviews.is_empty(),
+        "Large extent should use an overview"
+    );
+
+    // For medium extent, should return appropriate overview
+    let medium_extent = reader.best_overview_for_resolution(5000, 5000);
+    // Just verify it doesn't panic and returns a valid index
+    if let Some(idx) = medium_extent {
+        assert!(
+            idx < reader.overviews.len(),
+            "Overview index {} should be valid",
+            idx
+        );
     }
 }

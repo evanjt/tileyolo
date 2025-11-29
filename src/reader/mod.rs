@@ -13,5 +13,5 @@ pub mod tile_cache;
 #[cfg(test)]
 pub mod test_utils;
 
-// #[cfg(test)]
-// mod tests; // TODO: Update to use cog3pio instead of GDAL
+#[cfg(test)]
+mod gdal_comparison_tests;

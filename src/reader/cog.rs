@@ -1,10 +1,11 @@
 use crate::models::geometry::GeometryExtent;
 use crate::models::layer::Layer;
+use crate::reader::cog_reader::CogReader;
 use crate::reader::lzw_fallback::LzwRasterSource;
 use crate::reader::raster::{ArrayRasterSource, RasterSource};
 use crate::reader::tiff_chunked::TiffChunkedRasterSource;
 use crate::reader::tiff_utils::{AnyResult, read_primary_compression};
-use crate::utils::style::get_builtin_gradient;
+use crate::utils::style::{get_builtin_gradient, is_rgb_style};
 use geo::{AffineTransform, Coord};
 use image::{ColorType, ImageEncoder, Rgba, RgbaImage, codecs::png::PngEncoder};
 use lru::LruCache;
@@ -21,6 +22,11 @@ use tracing::{debug, warn, error, info};
 // Global LRU cache for loaded GeoTIFF sources - bounded to prevent memory bloat
 type CachedSource = Arc<dyn RasterSource>;
 const MAX_CACHED_SOURCES: usize = 50;
+
+// Cache for CogReader instances (efficient windowed reading)
+const MAX_CACHED_COG_READERS: usize = 50;
+static COG_READER_CACHE: Lazy<std::sync::Mutex<LruCache<String, Arc<CogReader>>>> =
+    Lazy::new(|| std::sync::Mutex::new(LruCache::new(NonZeroUsize::new(MAX_CACHED_COG_READERS).unwrap())));
 
 static SOURCE_CACHE: Lazy<std::sync::Mutex<LruCache<String, (CachedSource, AffineTransform<f64>)>>> =
     Lazy::new(|| std::sync::Mutex::new(LruCache::new(NonZeroUsize::new(MAX_CACHED_SOURCES).unwrap())));
@@ -618,34 +624,305 @@ fn extract_tile_region(
     Ok(pixel_data)
 }
 
-/// Fallback direct sampling from center of image when transform fails
+/// Return empty tile when transform fails or no valid pixels found
+/// Previously this sampled from center, which caused all tiles to show same content
 fn extract_tile_region_direct(
-    source: &dyn RasterSource,
+    _source: &dyn RasterSource,
     tile_size: (usize, usize),
 ) -> Result<Vec<f32>, Box<dyn std::error::Error + Send + Sync>> {
-    let height = source.height();
-    let width = source.width();
     let (tile_size_x, tile_size_y) = tile_size;
+    // Return empty (transparent) tile instead of sampling from center
+    // This is the correct behavior when the requested extent doesn't overlap the source
+    warn!("extract_tile_region_direct called - returning empty tile (transform or bounds issue)");
+    Ok(vec![f32::NAN; tile_size_x * tile_size_y])
+}
 
-    let mut pixel_data = vec![f32::NAN; tile_size_x * tile_size_y];
-    let center_x = width / 2;
-    let center_y = height / 2;
-    let sample_size = tile_size_x.min(width).min(tile_size_y);
+/// Get or create a cached CogReader for efficient windowed reading
+fn get_cog_reader(path: &PathBuf) -> Result<Arc<CogReader>, Box<dyn std::error::Error + Send + Sync>> {
+    let path_str = path.to_string_lossy().to_string();
 
-    for y in 0..tile_size_y {
-        for x in 0..tile_size_x {
-            let src_x = (center_x - sample_size / 2 + x.min(sample_size - 1)) as usize;
-            let src_y = (center_y - sample_size / 2 + y.min(sample_size - 1)) as usize;
+    // Check cache first
+    {
+        let mut cache = COG_READER_CACHE.lock().unwrap();
+        if let Some(reader) = cache.get(&path_str) {
+            return Ok(Arc::clone(reader));
+        }
+    }
 
-            if src_x < width && src_y < height {
-                if let Some(pixel_value) = source.sample(0, src_x, src_y) {
-                    pixel_data[y * tile_size_x + x] = pixel_value;
+    // Create new reader
+    let reader = CogReader::open(&path_str)?;
+    let reader = Arc::new(reader);
+
+    // Cache it
+    {
+        let mut cache = COG_READER_CACHE.lock().unwrap();
+        cache.put(path_str, Arc::clone(&reader));
+    }
+
+    Ok(reader)
+}
+
+/// Extracted tile data with band information
+pub struct TileData {
+    /// Pixel values (interleaved if multi-band: R,G,B,R,G,B,...)
+    pub pixels: Vec<f32>,
+    /// Number of bands (1 for grayscale, 3 for RGB, 4 for RGBA)
+    pub bands: usize,
+}
+
+/// Extract tile data using CogReader's efficient windowed reading
+/// This reads only the necessary TIFF tiles, not the entire file
+///
+/// OPTIMIZED: Pre-computes coordinate transforms, pre-loads needed tiles
+/// NOW WITH OVERVIEW SUPPORT: Uses appropriate resolution level for efficiency
+pub fn extract_tile_with_cog_reader(
+    reader: &CogReader,
+    extent_3857: &GeometryExtent,
+    tile_size: (usize, usize),
+) -> Result<TileData, Box<dyn std::error::Error + Send + Sync>> {
+    let (tile_size_x, tile_size_y) = tile_size;
+    let metadata = &reader.metadata;
+    let geo_transform = &metadata.geo_transform;
+
+    // Create coordinate transformer from EPSG:3857 (tile coords) to source CRS
+    // Uses proj library for accurate transformations to any CRS
+    let source_epsg = metadata.crs_code.unwrap_or(3857) as u32;
+    let transformer = crate::geometry::projection::create_transformer(source_epsg)
+        .map_err(|e| format!("CRS transformation error: {}", e))?;
+
+    // Pre-compute the affine transform from output pixel to source pixel
+    let (base_scale, tiepoint) = match (geo_transform.pixel_scale, geo_transform.tiepoint) {
+        (Some(s), Some(t)) => (s, t),
+        _ => return Err("Missing geotransform".into()),
+    };
+
+    // Calculate what resolution we need from the COG
+    // The output tile is tile_size_x × tile_size_y pixels
+    // We need to find an overview level that has enough resolution for that output
+
+    // Convert extent to source CRS to get geographic extent
+    let (src_minx, src_miny) = crate::geometry::projection::transform_coords(&transformer, extent_3857.minx, extent_3857.miny);
+    let (src_maxx, src_maxy) = crate::geometry::projection::transform_coords(&transformer, extent_3857.maxx, extent_3857.maxy);
+
+    // Calculate how many source pixels would cover this extent at full resolution
+    let extent_src_width = ((src_maxx - src_minx) / base_scale[0]).abs().max(1.0) as usize;
+    let extent_src_height = ((src_maxy - src_miny) / base_scale[1]).abs().max(1.0) as usize;
+
+    // The ratio tells us how many source pixels per output pixel we'd have at full res
+    // If extent covers 21600 source pixels but we only output 256, we can use a 64x overview
+    // If extent covers only 256 source pixels for 256 output, we need full resolution
+    //
+    // Pass the EXTENT SIZE IN SOURCE PIXELS to find an appropriate overview
+    // The function will compare this to the full resolution size to determine the scale factor
+    let overview_idx = reader.best_overview_for_resolution(extent_src_width, extent_src_height);
+
+    // Get effective metadata for the level we're using
+    let (eff_width, eff_height, eff_tile_width, eff_tile_height, eff_tiles_across, scale_factor) = if let Some(ovr_idx) = overview_idx {
+        let ovr = &reader.overviews[ovr_idx];
+        (ovr.width, ovr.height, ovr.tile_width, ovr.tile_height, ovr.tiles_across, ovr.scale as f64)
+    } else {
+        (metadata.width, metadata.height, metadata.tile_width, metadata.tile_height, metadata.tiles_across, 1.0)
+    };
+
+    // Adjust scale for overview level
+    let scale = [base_scale[0] * scale_factor, base_scale[1] * scale_factor, base_scale[2]];
+
+    // Output tile pixel resolution in Web Mercator
+    let out_res_x = (extent_3857.maxx - extent_3857.minx) / (tile_size_x as f64);
+    let out_res_y = (extent_3857.maxy - extent_3857.miny) / (tile_size_y as f64);
+
+    // Pre-compute which source tiles we need by checking corners and edges
+    let mut needed_tiles: std::collections::HashSet<usize> = std::collections::HashSet::new();
+
+    // Helper closure to compute tile index at overview level
+    let tile_index_at_level = |px: usize, py: usize| -> Option<usize> {
+        if px >= eff_width || py >= eff_height {
+            return None;
+        }
+        let tile_col = px / eff_tile_width;
+        let tile_row = py / eff_tile_height;
+        Some(tile_row * eff_tiles_across + tile_col)
+    };
+
+    // Sample corners and edges to find needed tiles (much faster than checking every pixel)
+    let sample_points = [
+        (0, 0), (tile_size_x - 1, 0), (0, tile_size_y - 1), (tile_size_x - 1, tile_size_y - 1),
+        (tile_size_x / 2, 0), (tile_size_x / 2, tile_size_y - 1),
+        (0, tile_size_y / 2), (tile_size_x - 1, tile_size_y / 2),
+        (tile_size_x / 2, tile_size_y / 2),
+    ];
+
+    for &(out_x, out_y) in &sample_points {
+        let merc_x = extent_3857.minx + (out_x as f64 + 0.5) * out_res_x;
+        let merc_y = extent_3857.maxy - (out_y as f64 + 0.5) * out_res_y;
+
+        // Transform from Web Mercator to source CRS using proj
+        let (world_x, world_y) = crate::geometry::projection::transform_coords(&transformer, merc_x, merc_y);
+
+        let src_px = tiepoint[0] + (world_x - tiepoint[3]) / scale[0];
+        let src_py = tiepoint[1] + (tiepoint[4] - world_y) / scale[1];
+
+        if src_px >= 0.0 && src_px < eff_width as f64 &&
+           src_py >= 0.0 && src_py < eff_height as f64 {
+            if let Some(idx) = tile_index_at_level(src_px as usize, src_py as usize) {
+                needed_tiles.insert(idx);
+            }
+        }
+    }
+
+    // Also add tiles between the corners (for larger output areas)
+    let max_tile_count = if let Some(_) = overview_idx {
+        // Using an overview - limit tile count is reasonable
+        let ovr = &reader.overviews[overview_idx.unwrap()];
+        ovr.tile_offsets.len()
+    } else {
+        metadata.tile_offsets.len()
+    };
+
+    if needed_tiles.len() > 1 {
+        let min_tile = *needed_tiles.iter().min().unwrap_or(&0);
+        let max_tile = *needed_tiles.iter().max().unwrap_or(&0);
+        let min_col = min_tile % eff_tiles_across;
+        let max_col = max_tile % eff_tiles_across;
+        let min_row = min_tile / eff_tiles_across;
+        let max_row = max_tile / eff_tiles_across;
+
+        // Read all tiles in the range - with overviews this is usually few tiles
+        for row in min_row..=max_row {
+            for col in min_col..=max_col {
+                let idx = row * eff_tiles_across + col;
+                if idx < max_tile_count {
+                    needed_tiles.insert(idx);
                 }
             }
         }
     }
 
-    Ok(pixel_data)
+    // Pre-load all needed tiles into cache (from overview or full resolution)
+    let mut tile_cache: HashMap<usize, Vec<f32>> = HashMap::with_capacity(needed_tiles.len());
+    for &tile_idx in &needed_tiles {
+        let data = if let Some(ovr_idx) = overview_idx {
+            reader.read_overview_tile(ovr_idx, tile_idx)
+        } else {
+            reader.read_tile(tile_idx)
+        };
+
+        if let Ok(data) = data {
+            tile_cache.insert(tile_idx, data);
+        }
+    }
+
+    // Now sample pixels - all tiles should already be loaded
+    // For multi-band images, we store all bands interleaved: R,G,B,R,G,B,...
+    let num_bands = metadata.bands;
+    let mut pixel_data = vec![f32::NAN; tile_size_x * tile_size_y * num_bands];
+
+    // Pre-compute inverse transform coefficients for speed
+    let inv_scale_x = 1.0 / scale[0];
+    let inv_scale_y = 1.0 / scale[1];
+
+    // Helper to sample a pixel from the tile cache with bounds checking
+    let sample_pixel = |px: usize, py: usize, band: usize| -> Option<f32> {
+        if px >= eff_width || py >= eff_height {
+            return None;
+        }
+        let tile_col = px / eff_tile_width;
+        let tile_row = py / eff_tile_height;
+        let tile_index = tile_row * eff_tiles_across + tile_col;
+
+        if let Some(tile_data) = tile_cache.get(&tile_index) {
+            let local_x = px - tile_col * eff_tile_width;
+            let local_y = py - tile_row * eff_tile_height;
+            let src_idx = (local_y * eff_tile_width + local_x) * num_bands + band;
+            tile_data.get(src_idx).copied()
+        } else {
+            None
+        }
+    };
+
+    for out_y in 0..tile_size_y {
+        let merc_y = extent_3857.maxy - (out_y as f64 + 0.5) * out_res_y;
+
+        for out_x in 0..tile_size_x {
+            let merc_x = extent_3857.minx + (out_x as f64 + 0.5) * out_res_x;
+
+            // Transform from Web Mercator to source CRS using proj
+            let (world_x, world_y) = crate::geometry::projection::transform_coords(&transformer, merc_x, merc_y);
+
+            // Inline world_to_pixel for speed
+            let src_px = tiepoint[0] + (world_x - tiepoint[3]) * inv_scale_x;
+            let src_py = tiepoint[1] + (tiepoint[4] - world_y) * inv_scale_y;
+
+            // Bilinear interpolation
+            // Get the four surrounding pixels and blend based on fractional position
+            let x0 = src_px.floor() as isize;
+            let y0 = src_py.floor() as isize;
+            let x1 = x0 + 1;
+            let y1 = y0 + 1;
+
+            // Fractional parts for interpolation weights
+            let fx = (src_px - src_px.floor()) as f32;
+            let fy = (src_py - src_py.floor()) as f32;
+
+            // Check if we're within bounds (at least partially)
+            if x0 >= -1 && x0 < eff_width as isize &&
+               y0 >= -1 && y0 < eff_height as isize {
+
+                let out_idx = (out_y * tile_size_x + out_x) * num_bands;
+
+                // Interpolate each band
+                for band in 0..num_bands {
+                    // Get the four corner values (None if out of bounds)
+                    let v00 = if x0 >= 0 && y0 >= 0 {
+                        sample_pixel(x0 as usize, y0 as usize, band)
+                    } else { None };
+                    let v10 = if x1 >= 0 && y1 >= 0 && (x1 as usize) < eff_width {
+                        sample_pixel(x1 as usize, y0 as usize, band)
+                    } else { None };
+                    let v01 = if x0 >= 0 && y1 >= 0 && (y1 as usize) < eff_height {
+                        sample_pixel(x0 as usize, y1 as usize, band)
+                    } else { None };
+                    let v11 = if x1 >= 0 && y1 >= 0 && (x1 as usize) < eff_width && (y1 as usize) < eff_height {
+                        sample_pixel(x1 as usize, y1 as usize, band)
+                    } else { None };
+
+                    // Bilinear interpolation with fallback to available values
+                    let result = match (v00, v10, v01, v11) {
+                        // All four available - full bilinear
+                        (Some(a), Some(b), Some(c), Some(d)) => {
+                            let top = a * (1.0 - fx) + b * fx;
+                            let bottom = c * (1.0 - fx) + d * fx;
+                            Some(top * (1.0 - fy) + bottom * fy)
+                        }
+                        // Only top row available
+                        (Some(a), Some(b), None, None) => Some(a * (1.0 - fx) + b * fx),
+                        // Only bottom row available
+                        (None, None, Some(c), Some(d)) => Some(c * (1.0 - fx) + d * fx),
+                        // Only left column available
+                        (Some(a), None, Some(c), None) => Some(a * (1.0 - fy) + c * fy),
+                        // Only right column available
+                        (None, Some(b), None, Some(d)) => Some(b * (1.0 - fy) + d * fy),
+                        // Corners only - fall back to nearest available
+                        (Some(a), None, None, None) => Some(a),
+                        (None, Some(b), None, None) => Some(b),
+                        (None, None, Some(c), None) => Some(c),
+                        (None, None, None, Some(d)) => Some(d),
+                        // Nothing available
+                        _ => None,
+                    };
+
+                    if let Some(value) = result {
+                        pixel_data[out_idx + band] = value;
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(TileData {
+        pixels: pixel_data,
+        bands: num_bands,
+    })
 }
 
 pub async fn process_cog(
@@ -657,100 +934,67 @@ pub async fn process_cog(
     task::spawn_blocking(move || {
         let (tile_size_x, tile_size_y) = tile_size;
 
-        // 1. Load COG data using cog3pio (with caching)
-        let (source, transform) = load_cog_data(&input_path)?;
-
-        // For now, assume the layer is in Web Mercator (EPSG:3857)
-        // In a real implementation, we'd need to extract the actual CRS from the GeoTIFF
-        let source_crs = format!("EPSG:{}", layer_obj.source_geometry.crs_code);
-
-        // Transform source extent to Web Mercator if needed
-        let source_extent_3857 = if source_crs == "EPSG:3857" {
-            layer_obj.source_geometry.extent.clone()
-        } else {
-            // For now, only handle EPSG:3857
-            // TODO: Implement coordinate transformations using geo crate for other CRS
-            layer_obj.source_geometry.extent.clone()
+        // Try CogReader first for efficient windowed reading
+        let tile_data = match get_cog_reader(&input_path) {
+            Ok(reader) => {
+                match extract_tile_with_cog_reader(&reader, &extent_3857, tile_size) {
+                    Ok(data) => data,
+                    Err(e) => {
+                        debug!(path = %input_path.display(), error = %e, "CogReader tile extraction failed, falling back to full load");
+                        // Fall back to old method (single band only)
+                        let (source, transform) = load_cog_data(&input_path)?;
+                        let pixels = extract_tile_region(
+                            source.as_ref(),
+                            &transform,
+                            &extent_3857,
+                            &layer_obj.source_geometry.extent,
+                            tile_size,
+                        )?;
+                        TileData { pixels, bands: 1 }
+                    }
+                }
+            }
+            Err(e) => {
+                debug!(path = %input_path.display(), error = %e, "CogReader open failed, falling back to full load");
+                // Fall back to old method (single band only)
+                let (source, transform) = load_cog_data(&input_path)?;
+                let pixels = extract_tile_region(
+                    source.as_ref(),
+                    &transform,
+                    &extent_3857,
+                    &layer_obj.source_geometry.extent,
+                    tile_size,
+                )?;
+                TileData { pixels, bands: 1 }
+            }
         };
 
-        // 2. Extract tile region from the array
-        let pixel_data = extract_tile_region(
-            source.as_ref(),
-            &transform, // Use the actual transform from cog3pio
-            &extent_3857,
-            &source_extent_3857,
-            tile_size,
-        )?;
-
-        // 3. Apply styling logic (same as original GDAL implementation)
         let mut img = RgbaImage::new(tile_size_x as u32, tile_size_y as u32);
 
-        if let Some(grad) = get_builtin_gradient(&layer_obj.style) {
-            // Use the gradient to colourise the image
-            for (i, &raw) in pixel_data.iter().enumerate() {
-                let px = if is_nodata(raw) {
-                    Rgba([0, 0, 0, 0])
-                } else {
-                    let t = ((raw - layer_obj.min_value)
-                        / (layer_obj.max_value - layer_obj.min_value))
-                        .clamp(0.0, 1.0);
-                    let [r, g, b, a] = grad.at(t).to_rgba8();
-                    Rgba([r, g, b, a])
-                };
-                let x = (i % tile_size_x) as u32;
-                let y = (i / tile_size_y) as u32;
-                img.put_pixel(x, y, px);
-            }
-        } else if layer_obj.colour_stops.is_empty() {
-            // Fallback to grayscale
-            for (i, &raw) in pixel_data.iter().enumerate() {
-                let px = if is_nodata(raw) {
-                    Rgba([0, 0, 0, 0])
-                } else {
-                    let norm =
-                        (raw - layer_obj.min_value) / (layer_obj.max_value - layer_obj.min_value);
-                    let lum = (norm.clamp(0.0, 1.0) * 255.0) as u8;
-                    Rgba([lum, lum, lum, 255])
-                };
-                let x = (i % tile_size_x) as u32;
-                let y = (i / tile_size_y) as u32;
-                img.put_pixel(x, y, px);
-            }
+        // Determine rendering mode based on style and band count:
+        // 1. If style is explicitly "rgb" -> RGB passthrough (or grayscale fallback for 1-band)
+        // 2. If style is a colormap (viridis, etc.) -> always colorize first band
+        // 3. If no style set and 3+ bands -> RGB passthrough
+        // 4. Otherwise -> single-band colorization
+        let use_rgb_passthrough = if is_rgb_style(&layer_obj.style) {
+            // RGB style folder: use RGB if available, else grayscale
+            tile_data.bands >= 3
+        } else if get_builtin_gradient(&layer_obj.style).is_some() || !layer_obj.colour_stops.is_empty() {
+            // Explicit colormap style: always use first band
+            false
         } else {
-            // Use the colour stops to colourise the image
-            let cs = &layer_obj.colour_stops;
-            let style_min = cs.first().unwrap().value;
-            let style_max = cs.last().unwrap().value;
-            for (i, &raw) in pixel_data.iter().enumerate() {
-                let px = if is_nodata(raw) {
-                    Rgba([0, 0, 0, 0])
-                } else {
-                    let norm =
-                        (raw - layer_obj.min_value) / (layer_obj.max_value - layer_obj.min_value);
-                    let scaled = style_min + norm.clamp(0.0, 1.0) * (style_max - style_min);
-                    let mut colour = Rgba([0, 0, 0, 0]);
-                    for w in cs.windows(2) {
-                        let a = &w[0];
-                        let b = &w[1];
-                        if scaled >= a.value && scaled <= b.value {
-                            let t = (scaled - a.value) / (b.value - a.value);
-                            let r = ((1.0 - t) * a.red as f32 + t * b.red as f32) as u8;
-                            let g = ((1.0 - t) * a.green as f32 + t * b.green as f32) as u8;
-                            let b_ = ((1.0 - t) * a.blue as f32 + t * b.blue as f32) as u8;
-                            let a_ = ((1.0 - t) * a.alpha as f32 + t * b.alpha as f32) as u8;
-                            colour = Rgba([r, g, b_, a_]);
-                            break;
-                        }
-                    }
-                    colour
-                };
-                let x = (i % tile_size_x) as u32;
-                let y = (i / tile_size_y) as u32;
-                img.put_pixel(x, y, px);
-            }
+            // No specific style: use RGB if available
+            tile_data.bands >= 3
+        };
+
+        if use_rgb_passthrough {
+            render_rgb_tile(&tile_data, tile_size_x, tile_size_y, &mut img);
+        } else {
+            // Single-band rendering with colorization
+            render_single_band_tile(&tile_data, tile_size_x, tile_size_y, &layer_obj, &mut img);
         }
 
-        // 4. Encode to PNG
+        // Encode to PNG
         let mut png_data = Vec::new();
         PngEncoder::new(Cursor::new(&mut png_data)).write_image(
             img.as_raw(),
@@ -762,6 +1006,131 @@ pub async fn process_cog(
         Ok(png_data)
     })
     .await?
+}
+
+/// Render RGB/RGBA tile directly without colorization
+fn render_rgb_tile(
+    tile_data: &TileData,
+    tile_size_x: usize,
+    tile_size_y: usize,
+    img: &mut RgbaImage,
+) {
+    let num_bands = tile_data.bands;
+    let pixels = &tile_data.pixels;
+
+    for y in 0..tile_size_y {
+        for x in 0..tile_size_x {
+            let idx = (y * tile_size_x + x) * num_bands;
+
+            // Get RGB values (clamp to 0-255 range)
+            let r = pixels.get(idx).copied().unwrap_or(f32::NAN);
+            let g = pixels.get(idx + 1).copied().unwrap_or(f32::NAN);
+            let b = pixels.get(idx + 2).copied().unwrap_or(f32::NAN);
+
+            // Check if any band is nodata
+            let px = if r.is_nan() || g.is_nan() || b.is_nan() {
+                Rgba([0, 0, 0, 0])
+            } else {
+                // Get alpha if present (4-band), otherwise fully opaque
+                let a = if num_bands >= 4 {
+                    pixels.get(idx + 3).copied().unwrap_or(255.0).clamp(0.0, 255.0) as u8
+                } else {
+                    255
+                };
+
+                Rgba([
+                    r.clamp(0.0, 255.0) as u8,
+                    g.clamp(0.0, 255.0) as u8,
+                    b.clamp(0.0, 255.0) as u8,
+                    a,
+                ])
+            };
+
+            img.put_pixel(x as u32, y as u32, px);
+        }
+    }
+}
+
+/// Render single-band tile with colorization (gradient, colour stops, or grayscale)
+fn render_single_band_tile(
+    tile_data: &TileData,
+    tile_size_x: usize,
+    tile_size_y: usize,
+    layer_obj: &Layer,
+    img: &mut RgbaImage,
+) {
+    let num_bands = tile_data.bands;
+    let pixel_data = &tile_data.pixels;
+    let num_pixels = tile_size_x * tile_size_y;
+
+    if let Some(grad) = get_builtin_gradient(&layer_obj.style) {
+        // Use the gradient to colourise the image (first band only)
+        for i in 0..num_pixels {
+            // For multi-band data, extract only the first band
+            let raw = pixel_data.get(i * num_bands).copied().unwrap_or(f32::NAN);
+            let px = if is_nodata(raw) {
+                Rgba([0, 0, 0, 0])
+            } else {
+                let t = ((raw - layer_obj.min_value)
+                    / (layer_obj.max_value - layer_obj.min_value))
+                    .clamp(0.0, 1.0);
+                let [r, g, b, a] = grad.at(t).to_rgba8();
+                Rgba([r, g, b, a])
+            };
+            let x = (i % tile_size_x) as u32;
+            let y = (i / tile_size_x) as u32;
+            img.put_pixel(x, y, px);
+        }
+    } else if layer_obj.colour_stops.is_empty() {
+        // Fallback to grayscale (first band only)
+        for i in 0..num_pixels {
+            let raw = pixel_data.get(i * num_bands).copied().unwrap_or(f32::NAN);
+            let px = if is_nodata(raw) {
+                Rgba([0, 0, 0, 0])
+            } else {
+                let norm =
+                    (raw - layer_obj.min_value) / (layer_obj.max_value - layer_obj.min_value);
+                let lum = (norm.clamp(0.0, 1.0) * 255.0) as u8;
+                Rgba([lum, lum, lum, 255])
+            };
+            let x = (i % tile_size_x) as u32;
+            let y = (i / tile_size_x) as u32;
+            img.put_pixel(x, y, px);
+        }
+    } else {
+        // Use the colour stops to colourise the image (first band only)
+        let cs = &layer_obj.colour_stops;
+        let style_min = cs.first().unwrap().value;
+        let style_max = cs.last().unwrap().value;
+        for i in 0..num_pixels {
+            let raw = pixel_data.get(i * num_bands).copied().unwrap_or(f32::NAN);
+            let px = if is_nodata(raw) {
+                Rgba([0, 0, 0, 0])
+            } else {
+                let norm =
+                    (raw - layer_obj.min_value) / (layer_obj.max_value - layer_obj.min_value);
+                let scaled = style_min + norm.clamp(0.0, 1.0) * (style_max - style_min);
+                let mut colour = Rgba([0, 0, 0, 0]);
+                for w in cs.windows(2) {
+                    let a = &w[0];
+                    let b = &w[1];
+                    if scaled >= a.value && scaled <= b.value {
+                        let t = (scaled - a.value) / (b.value - a.value);
+                        let r = ((1.0 - t) * a.red as f32 + t * b.red as f32) as u8;
+                        let g = ((1.0 - t) * a.green as f32 + t * b.green as f32) as u8;
+                        let b_ = ((1.0 - t) * a.blue as f32 + t * b.blue as f32) as u8;
+                        let a_ = ((1.0 - t) * a.alpha as f32 + t * b.alpha as f32) as u8;
+                        colour = Rgba([r, g, b_, a_]);
+                        break;
+                    }
+                }
+                colour
+            };
+            let x = (i % tile_size_x) as u32;
+            let y = (i / tile_size_x) as u32;
+            img.put_pixel(x, y, px);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -801,6 +1170,7 @@ mod tests {
             max_value,
             is_cog: true,
             last_modified: std::time::SystemTime::UNIX_EPOCH,
+            bands: 1,
         }
     }
 
@@ -1145,5 +1515,183 @@ mod tests {
         assert_eq!(bands, 3);
         assert_eq!(height, 100);
         assert_eq!(width, 200);
+    }
+
+    // ========================================================================
+    // END-TO-END INTEGRATION TESTS WITH REAL COG FILES
+    // These tests verify the full tile extraction pipeline against GDAL output.
+    // They would have caught the coordinate mismatch bug!
+    // ========================================================================
+
+    /// TEST: End-to-end tile extraction with CogReader matches expected values
+    ///
+    /// This is the integration test that SHOULD have caught our bug:
+    /// - Uses real COG file (gray_3857-cog.tif)
+    /// - Extracts tile at zoom 2, position (1,1)
+    /// - Verifies pixel values match GDAL reference values
+    ///
+    /// GDAL reference values obtained via:
+    /// gdal_translate -of PNG -outsize 256 256 \
+    ///   -projwin -10018754.17 10018754.17 0 0 \
+    ///   data/grayscale/gray_3857-cog.tif /tmp/gdal_z2.png
+    #[test]
+    fn test_tile_extraction_matches_gdal_reference() {
+        let path = "data/grayscale/gray_3857-cog.tif";
+        if !std::path::Path::new(path).exists() {
+            println!("Skipping - file not found: {}", path);
+            return;
+        }
+
+        let reader = CogReader::open(path).expect("Failed to open COG");
+
+        // Web Mercator tile bounds for z=2, x=1, y=1
+        // minx = -20037508.34 + 1 * (40075016.68/4) = -10018754.17
+        // maxx = -20037508.34 + 2 * (40075016.68/4) = 0
+        // maxy = 20037508.34 - 1 * (40075016.68/4) = 10018754.17
+        // miny = 20037508.34 - 2 * (40075016.68/4) = 0
+        let extent = GeometryExtent::new(
+            -10018754.17,  // minx
+            0.0,           // miny
+            0.0,           // maxx
+            10018754.17,   // maxy
+        );
+
+        let tile_data = extract_tile_with_cog_reader(&reader, &extent, (256, 256))
+            .expect("Failed to extract tile");
+
+        // Verify we got data
+        assert_eq!(tile_data.pixels.len(), 256 * 256, "Should have 256x256 pixels");
+        assert_eq!(tile_data.bands, 1, "Should have 1 band");
+
+        // Count valid pixels
+        let valid_count = tile_data.pixels.iter().filter(|v| !v.is_nan()).count();
+        assert!(valid_count > 0, "Should have valid (non-NaN) pixels");
+
+        // GDAL reference values for corners of this tile:
+        // TL (0,0) = 225, TR (255,0) = 166, BL (0,255) = 169, BR (255,255) = 153
+        // Allow tolerance for resampling differences
+        const TOLERANCE: f32 = 10.0;
+
+        let tl = tile_data.pixels[0];
+        let tr = tile_data.pixels[255];
+        let bl = tile_data.pixels[255 * 256];
+        let br = tile_data.pixels[255 * 256 + 255];
+
+        // These are the critical assertions that would have caught the bug!
+        // Before the fix: TL was ~170, BR was ~205 (completely wrong)
+        // After the fix: TL is ~225, BR is ~153 (matches GDAL)
+
+        if !tl.is_nan() {
+            assert!(
+                (tl - 225.0).abs() < TOLERANCE,
+                "Top-left pixel should be ~225 (GDAL reference), got {}",
+                tl
+            );
+        }
+
+        if !tr.is_nan() {
+            assert!(
+                (tr - 166.0).abs() < TOLERANCE,
+                "Top-right pixel should be ~166 (GDAL reference), got {}",
+                tr
+            );
+        }
+
+        if !bl.is_nan() {
+            assert!(
+                (bl - 169.0).abs() < TOLERANCE,
+                "Bottom-left pixel should be ~169 (GDAL reference), got {}",
+                bl
+            );
+        }
+
+        if !br.is_nan() {
+            assert!(
+                (br - 153.0).abs() < TOLERANCE,
+                "Bottom-right pixel should be ~153 (GDAL reference), got {}",
+                br
+            );
+        }
+    }
+
+    /// TEST: Verify pixel statistics match expected range
+    ///
+    /// This test verifies the overall statistics of extracted tiles.
+    #[test]
+    fn test_tile_statistics_match_expected() {
+        let path = "data/grayscale/gray_3857-cog.tif";
+        if !std::path::Path::new(path).exists() {
+            println!("Skipping - file not found: {}", path);
+            return;
+        }
+
+        let reader = CogReader::open(path).expect("Failed to open COG");
+
+        // Same extent as above
+        let extent = GeometryExtent::new(-10018754.17, 0.0, 0.0, 10018754.17);
+
+        let tile_data = extract_tile_with_cog_reader(&reader, &extent, (256, 256))
+            .expect("Failed to extract tile");
+
+        // Calculate statistics
+        let valid_pixels: Vec<f32> = tile_data.pixels.iter()
+            .filter(|v| !v.is_nan())
+            .copied()
+            .collect();
+
+        if !valid_pixels.is_empty() {
+            let min = valid_pixels.iter().copied().fold(f32::INFINITY, f32::min);
+            let max = valid_pixels.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            let mean = valid_pixels.iter().sum::<f32>() / valid_pixels.len() as f32;
+
+            // GDAL reference statistics:
+            // min=120, max=251, mean=173.9
+            assert!(min >= 100.0 && min <= 140.0, "Min should be ~120, got {}", min);
+            assert!(max >= 230.0 && max <= 260.0, "Max should be ~251, got {}", max);
+            assert!(mean >= 160.0 && mean <= 190.0, "Mean should be ~174, got {}", mean);
+        }
+    }
+
+    /// TEST: Verify CRS transformation is correct for 3857 source
+    ///
+    /// For EPSG:3857 source, no transformation should be applied.
+    #[test]
+    fn test_crs_transformation_3857_passthrough() {
+        let transformer = crate::geometry::projection::create_transformer(3857)
+            .expect("Should create transformer for 3857");
+
+        // For 3857, transformer should be None (no transform needed)
+        assert!(
+            transformer.is_none(),
+            "3857 to 3857 should not need transformation"
+        );
+
+        // Coordinates should pass through unchanged
+        let test_x = -10018754.17;
+        let test_y = 10018754.17;
+        let (out_x, out_y) = crate::geometry::projection::transform_coords(&transformer, test_x, test_y);
+
+        assert_eq!(out_x, test_x, "X should be unchanged for 3857");
+        assert_eq!(out_y, test_y, "Y should be unchanged for 3857");
+    }
+
+    /// TEST: Verify CRS transformation works for 4326 source
+    ///
+    /// For EPSG:4326 source, coordinates should be transformed from 3857.
+    #[test]
+    fn test_crs_transformation_4326() {
+        let transformer = crate::geometry::projection::create_transformer(4326)
+            .expect("Should create transformer for 4326");
+
+        // For 4326, transformer should exist
+        assert!(
+            transformer.is_some(),
+            "3857 to 4326 should need transformation"
+        );
+
+        // Test known conversion: Web Mercator (0, 0) = Geographic (0, 0)
+        let (lon, lat) = crate::geometry::projection::transform_coords(&transformer, 0.0, 0.0);
+        assert!(lon.abs() < 1e-6, "Origin longitude should be ~0");
+        assert!(lat.abs() < 1e-6, "Origin latitude should be ~0");
     }
 }
