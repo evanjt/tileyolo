@@ -75,6 +75,7 @@ impl LocalTileReader {
         );
         let mut loaded_bytes = 0u64;
         let mut layers: Vec<Layer> = Vec::new();
+        let mut skipped_files: Vec<(PathBuf, String)> = Vec::new();
 
         // Process each file found in the directory
         for entry in entries {
@@ -126,15 +127,18 @@ impl LocalTileReader {
                 Err(e) => {
                     let err_str = e.to_string();
                     // Provide helpful conversion instructions for common non-COG errors
-                    if err_str.contains("Missing tag 324") || err_str.contains("Missing tag 325") {
-                        pb.println(format!("❌ Skipping non-COG file: {} (not tiled)", path.display()));
-                        pb.println("   ℹ️  Convert to COG with: gdal_translate -of COG -co COMPRESS=DEFLATE input.tif output.tif".to_string());
+                    let reason = if err_str.contains("Missing tag 324") || err_str.contains("Missing tag 325") {
+                        pb.println(format!("   ⚠ Skipping: {} (not tiled)", file_stem));
+                        "not tiled".to_string()
                     } else if err_str.contains("failed to fill whole buffer") {
-                        pb.println(format!("❌ Skipping truncated/invalid file: {}", path.display()));
-                        pb.println("   ℹ️  Re-export with: gdal_translate -of COG -co COMPRESS=DEFLATE input.tif output.tif".to_string());
+                        pb.println(format!("   ⚠ Skipping: {} (truncated/invalid)", file_stem));
+                        "truncated/invalid".to_string()
                     } else {
-                        pb.println(format!("❌ Failed to read file: {}", e));
-                    }
+                        pb.println(format!("   ⚠ Skipping: {} ({})", file_stem, err_str));
+                        err_str
+                    };
+                    skipped_files.push((path, reason));
+                    pb.inc(1);
                     continue; // Skip this file and continue processing others
                 }
             };
@@ -152,6 +156,24 @@ impl LocalTileReader {
             total_bytes as f64 / 1024.0 / 1024.0
         );
         println!("📦 Total layers: {}", layers.len());
+
+        // Print skipped files summary with helpful instructions
+        if !skipped_files.is_empty() {
+            println!("\n⚠️  {} file(s) were skipped due to compatibility issues:", skipped_files.len());
+            for (path, reason) in &skipped_files {
+                let name = path.file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| path.display().to_string());
+                println!("   • {} ({})", name, reason);
+            }
+            println!();
+            println!("   To convert files to compatible COG format:");
+            println!("   $ gdal_translate -of COG -co COMPRESS=DEFLATE -co BLOCKSIZE=512 <input.tif> <output.tif>");
+            println!("   $ gdalinfo -stats <output.tif>");
+            println!();
+            println!("   For detailed compliance analysis:");
+            println!("   $ tileyolo check <path>");
+        }
 
         print_layer_summary(&layers);
 
