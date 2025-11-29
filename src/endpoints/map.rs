@@ -56,6 +56,10 @@ pub(super) const INDEX_HTML: &str = r#"<!DOCTYPE html>
         <input type="checkbox" id="osmToggle" />
         Show OSM Basemap
       </label>
+      <label style="margin-left: 12px;">
+        <input type="checkbox" id="showUnoptimised" />
+        Show unoptimised
+      </label>
     </div>
 
     <div id="map"></div>
@@ -70,6 +74,7 @@ pub(super) const INDEX_HTML: &str = r#"<!DOCTYPE html>
       const layerSelect = document.getElementById('layerSelect');
       const osmToggle = document.getElementById('osmToggle');
       const opacitySlider = document.getElementById('opacitySlider');
+      const showUnoptimised = document.getElementById('showUnoptimised');
 
       // initialize map
       const map = L.map('map').setView([0, 0], 2);
@@ -90,22 +95,38 @@ pub(super) const INDEX_HTML: &str = r#"<!DOCTYPE html>
       async function initLayers() {
         // fetch available layers
         const res = await fetch('/layers');
-        const data = await res.json();  // Structure of JSON: [{ layer, style, geometry }, …]
+        const data = await res.json();  // Structure of JSON: [{ layer, style, geometry, is_tiled }, …]
         layersData = data;
+        populateLayerSelect();
+      }
 
-        // populate <select> - use index as value to distinguish same layer with different styles
+      function populateLayerSelect() {
+        const includeUnoptimised = showUnoptimised.checked;
+
+        // Filter layers based on checkbox
+        const filteredLayers = layersData.filter(layer =>
+          includeUnoptimised || layer.is_tiled
+        );
+
+        // populate <select> - use original index as value
         layerSelect.innerHTML = '';
-        data.forEach(({ layer, style }, index) => {
+        layersData.forEach((layerData, index) => {
+          // Skip unoptimised layers if checkbox is unchecked
+          if (!includeUnoptimised && !layerData.is_tiled) return;
+
           const opt = document.createElement('option');
-          opt.value = index;  // Use index to uniquely identify layer+style combo
-          opt.textContent = `${layer} (${style})`; // Display as "layer (style)"
+          opt.value = index;  // Use original index to uniquely identify layer+style combo
+          const tiledBadge = layerData.is_tiled ? '' : ' [slow]';
+          opt.textContent = `${layerData.layer} (${layerData.style})${tiledBadge}`;
           layerSelect.appendChild(opt);
         });
 
-        // add first layer to map
-        const firstIndex = parseInt(layerSelect.value);
-        const firstLayerData = data[firstIndex];
-        addLayerToMap(firstLayerData.layer, firstLayerData.style, firstLayerData.source_geometry);
+        // add first available layer to map
+        if (layerSelect.options.length > 0) {
+          const firstIndex = parseInt(layerSelect.value);
+          const firstLayerData = layersData[firstIndex];
+          addLayerToMap(firstLayerData.layer, firstLayerData.style, firstLayerData.source_geometry);
+        }
       }
 
       function addLayerToMap(layer, style, geometry) {
@@ -174,6 +195,11 @@ pub(super) const INDEX_HTML: &str = r#"<!DOCTYPE html>
         } else {
           map.removeLayer(osmLayer);
         }
+      });
+
+      showUnoptimised.addEventListener('change', () => {
+        // Re-populate the layer select with filtered layers
+        populateLayerSelect();
       });
 
       layerSelect.addEventListener('change', () => {
