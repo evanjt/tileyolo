@@ -2120,4 +2120,40 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn test_stripped_vs_tiled_minmax() {
+        let stripped_path = "data/test/gray_3857.tif";
+        let tiled_path = "data/grayscale/gray_3857-cog.tif";
+
+        if !Path::new(stripped_path).exists() || !Path::new(tiled_path).exists() {
+            println!("Skipping - files not found");
+            return;
+        }
+
+        let stripped = CogReader::open(stripped_path).expect("Failed to open stripped");
+        let tiled = CogReader::open(tiled_path).expect("Failed to open tiled");
+
+        println!("Stripped TIFF:");
+        println!("  is_tiled: {}", stripped.metadata.is_tiled);
+        println!("  tile_width: {}", stripped.metadata.tile_width);
+        println!("  tile_height: {}", stripped.metadata.tile_height);
+        println!("  stats_min: {:?}", stripped.metadata.stats_min);
+        println!("  stats_max: {:?}", stripped.metadata.stats_max);
+        let (smin, smax) = stripped.estimate_min_max().expect("estimate");
+        println!("  estimated min/max: {} / {}", smin, smax);
+
+        println!("\nTiled COG:");
+        println!("  is_tiled: {}", tiled.metadata.is_tiled);
+        println!("  tile_width: {}", tiled.metadata.tile_width);
+        println!("  tile_height: {}", tiled.metadata.tile_height);
+        println!("  stats_min: {:?}", tiled.metadata.stats_min);
+        println!("  stats_max: {:?}", tiled.metadata.stats_max);
+        let (tmin, tmax) = tiled.estimate_min_max().expect("estimate");
+        println!("  estimated min/max: {} / {}", tmin, tmax);
+
+        // Min/max should be similar (within some tolerance since we sample differently)
+        assert!((smin - tmin).abs() < 50.0, "Min values too different: {} vs {}", smin, tmin);
+        assert!((smax - tmax).abs() < 50.0, "Max values too different: {} vs {}", smax, tmax);
+    }
 }

@@ -548,6 +548,9 @@ impl CogReader {
             ]
         };
 
+        // Get nodata value if set
+        let nodata = self.metadata.nodata;
+
         for tile_idx in sample_indices {
             if tile_idx >= total_tiles {
                 continue;
@@ -555,8 +558,14 @@ impl CogReader {
 
             let tile_data = self.read_tile(tile_idx)?;
             for &val in &tile_data {
+                // Skip NaN and nodata values
                 if val.is_nan() {
                     continue;
+                }
+                if let Some(nd) = nodata {
+                    if (val as f64 - nd).abs() < 0.001 {
+                        continue;
+                    }
                 }
                 if val < min {
                     min = val;
