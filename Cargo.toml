@@ -51,6 +51,7 @@ thiserror = "2.0"
 tracing = "0.1"
 flate2 = "1.0"
 zstd = "0.13"
+futures = "0.3"
 # GDAL is optional - only used for validation tests
 gdal = { version = "0.18", features = ["bindgen"], optional = true }
 

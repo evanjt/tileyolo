@@ -106,6 +106,7 @@ mod tests {
     }
 
     /// Helper to compute pixel difference statistics
+    #[allow(dead_code)]
     struct DiffStats {
         min_diff: f32,
         max_diff: f32,

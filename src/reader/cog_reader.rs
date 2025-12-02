@@ -1757,7 +1757,7 @@ fn test_best_overview_selection() {
     let reader = CogReader::open(path).expect("Failed to open COG");
 
     // For a small extent (256 pixels worth), should return None (use full res)
-    let full_res = reader.best_overview_for_resolution(256, 256);
+    let _full_res = reader.best_overview_for_resolution(256, 256);
     // This might return None or a small overview index depending on the image
 
     // For a large extent (whole image), should return highest overview

@@ -4,6 +4,7 @@ use crate::config::{Config, Source};
 use crate::endpoints::handlers::{get_all_layers, tile_handler, webmap_handler};
 use crate::error::TileYoloError;
 use crate::reader::local::LocalTileReader;
+use crate::reader::s3_tile_reader::S3TileReader;
 use crate::traits::TileReader;
 use axum::{routing::get, Router};
 use std::net::SocketAddr;
@@ -58,11 +59,7 @@ impl TileServer {
     pub async fn new(config: Config) -> Result<Self, TileYoloError> {
         let reader: Arc<dyn TileReader> = match &config.source {
             Some(Source::Local(path)) => Arc::new(LocalTileReader::new(path).await),
-            Some(Source::S3 { bucket, prefix }) => {
-                return Err(TileYoloError::Unsupported(format!(
-                    "S3 backend not yet implemented (bucket: {bucket}, prefix: {prefix})"
-                )));
-            }
+            Some(Source::S3 { bucket, prefix }) => Arc::new(S3TileReader::new(bucket, prefix).await?),
             None => {
                 return Err(TileYoloError::Config(
                     "No source provided in the configuration".to_string(),

@@ -7,6 +7,7 @@ pub mod metadata;
 pub mod range_reader;
 pub mod raster;
 pub mod s3;
+pub mod s3_tile_reader;
 pub mod tiff_chunked;
 pub mod tiff_utils;
 pub mod tile_cache;

@@ -1,6 +1,3 @@
-/// Default XYZ tile size in pixels.
-pub const TILE_SIZE: u32 = 256;
-
 /// Web Mercator extent in meters (half the world).
 /// This is the maximum extent of the EPSG:3857 projection.
 pub const WEB_MERCATOR_EXTENT: f64 = 20_037_508.342_789_244;

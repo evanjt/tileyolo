@@ -3252,6 +3252,7 @@ dependencies = [
  "comfy-table",
  "csv",
  "flate2",
+ "futures",
  "gdal",
  "geo",
  "image",
