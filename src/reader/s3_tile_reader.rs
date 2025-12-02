@@ -117,9 +117,13 @@ impl S3TileReader {
             .build()
             .map_err(|e| TileYoloError::Config(format!("Failed to create S3 client: {e}")))?;
 
-        // List objects with the prefix
-        let prefix_path = object_store::path::Path::from(prefix);
-        let mut list_stream = store.list(Some(&prefix_path));
+        // List objects with the prefix (None means list all)
+        let prefix_path = if prefix.is_empty() {
+            None
+        } else {
+            Some(object_store::path::Path::from(prefix))
+        };
+        let mut list_stream = store.list(prefix_path.as_ref());
 
         let mut layers = Vec::new();
 
@@ -128,9 +132,11 @@ impl S3TileReader {
                 .map_err(|e| TileYoloError::DataRead(format!("Failed to list S3 objects: {e}")))?;
 
             let key = meta.location.to_string();
+            info!(key = %key, size = meta.size, "Found S3 object");
 
             // Check if it's a TIFF file
             if !key.ends_with(".tif") && !key.ends_with(".tiff") {
+                info!(key = %key, "Skipping non-TIFF file");
                 continue;
             }
 
@@ -149,9 +155,15 @@ impl S3TileReader {
             let filename = parts[parts.len() - 1];
             let layer_name = filename.trim_end_matches(".tif").trim_end_matches(".tiff");
 
-            // Try to read COG metadata (sync call within async context)
+            // Try to read COG metadata using block_in_place to allow blocking I/O
+            // CogReader::open uses S3RangeReaderSync which needs a tokio runtime handle
             let s3_url = format!("s3://{bucket}/{key}");
-            match Self::load_layer_metadata(&s3_url, layer_name, style_name, meta.size as u64) {
+
+            let result = tokio::task::block_in_place(|| {
+                Self::load_layer_metadata(&s3_url, layer_name, style_name, meta.size as u64)
+            });
+
+            match result {
                 Ok(layer) => {
                     info!(layer = %layer_name, style = %style_name, "Loaded layer from S3");
                     layers.push(layer);
@@ -162,6 +174,7 @@ impl S3TileReader {
             }
         }
 
+        info!(layers = layers.len(), "S3 bucket scan complete");
         Ok(layers)
     }
 

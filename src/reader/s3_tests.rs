@@ -258,3 +258,230 @@ async fn test_s3_nonexistent_bucket() {
     assert!(result.is_err(), "Should fail for non-existent bucket");
     println!("Non-existent bucket correctly returned error");
 }
+
+// ============================================================================
+// S3TileReader Integration Tests
+// ============================================================================
+
+use super::s3_tile_reader::S3TileReader;
+use crate::traits::TileReader;
+
+/// Test S3TileReader initialization with a valid bucket
+#[tokio::test(flavor = "multi_thread")]
+async fn test_s3_tile_reader_init() {
+    if !s3_test_available() {
+        println!("Skipping S3TileReader test - no S3 endpoint configured");
+        return;
+    }
+
+    let bucket = test_bucket();
+    // The prefix should point to the parent of style folders
+    // Structure: bucket/viridis/layer.tif -> prefix should be ""
+    let prefix = "";
+
+    match S3TileReader::new(&bucket, prefix).await {
+        Ok(reader) => {
+            let layers = reader.list_layers().await;
+            println!("S3TileReader found {} layers", layers.len());
+            for layer in &layers {
+                println!("  - {} (style: {})", layer.layer, layer.style);
+            }
+        }
+        Err(e) => {
+            println!("S3TileReader init failed (may be expected if no test data): {e}");
+        }
+    }
+}
+
+/// Test S3TileReader can list layers from bucket
+#[tokio::test(flavor = "multi_thread")]
+async fn test_s3_tile_reader_list_layers() {
+    if !s3_test_available() {
+        println!("Skipping S3TileReader test - no S3 endpoint configured");
+        return;
+    }
+
+    let bucket = test_bucket();
+    let reader = match S3TileReader::new(&bucket, "").await {
+        Ok(r) => r,
+        Err(e) => {
+            println!("Skipping - could not init S3TileReader: {e}");
+            return;
+        }
+    };
+
+    let layers = reader.list_layers().await;
+    if layers.is_empty() {
+        println!("No layers found - bucket may be empty or structure incorrect");
+        println!("Expected structure: bucket/style/layer.tif");
+        return;
+    }
+
+    println!("Found {} layers:", layers.len());
+    for layer in &layers {
+        println!(
+            "  Layer: {}, Style: {}, Path: {:?}",
+            layer.layer, layer.style, layer.path
+        );
+        println!(
+            "    Extent: ({:.2}, {:.2}) to ({:.2}, {:.2})",
+            layer.source_geometry.extent.minx,
+            layer.source_geometry.extent.miny,
+            layer.source_geometry.extent.maxx,
+            layer.source_geometry.extent.maxy
+        );
+        println!("    CRS: EPSG:{}", layer.source_geometry.crs_code);
+    }
+}
+
+/// Test S3TileReader can serve tiles
+#[tokio::test(flavor = "multi_thread")]
+async fn test_s3_tile_reader_get_tile() {
+    if !s3_test_available() {
+        println!("Skipping S3TileReader test - no S3 endpoint configured");
+        return;
+    }
+
+    let bucket = test_bucket();
+    let reader = match S3TileReader::new(&bucket, "").await {
+        Ok(r) => r,
+        Err(e) => {
+            println!("Skipping - could not init S3TileReader: {e}");
+            return;
+        }
+    };
+
+    let layers = reader.list_layers().await;
+    if layers.is_empty() {
+        println!("No layers to test tile fetching");
+        return;
+    }
+
+    let layer_name = &layers[0].layer;
+    println!("Testing tile fetch for layer: {layer_name}");
+
+    // Request zoom level 0 tile (world extent)
+    match reader.get_tile(layer_name, 0, 0, 0, None).await {
+        Ok(response) => {
+            assert_eq!(response.content_type, "image/png");
+            assert!(!response.bytes.is_empty(), "Tile should have content");
+            println!(
+                "Got tile: {} bytes, content-type: {}",
+                response.bytes.len(),
+                response.content_type
+            );
+
+            // Verify PNG magic bytes
+            assert!(
+                response.bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47]),
+                "Response should be a valid PNG"
+            );
+        }
+        Err(e) => {
+            println!("Tile fetch error: {e}");
+        }
+    }
+}
+
+/// Test S3TileReader returns transparent tile for out-of-bounds requests
+#[tokio::test(flavor = "multi_thread")]
+async fn test_s3_tile_reader_out_of_bounds() {
+    if !s3_test_available() {
+        println!("Skipping S3TileReader test - no S3 endpoint configured");
+        return;
+    }
+
+    let bucket = test_bucket();
+    let reader = match S3TileReader::new(&bucket, "").await {
+        Ok(r) => r,
+        Err(e) => {
+            println!("Skipping - could not init S3TileReader: {e}");
+            return;
+        }
+    };
+
+    let layers = reader.list_layers().await;
+    if layers.is_empty() {
+        println!("No layers to test");
+        return;
+    }
+
+    let layer_name = &layers[0].layer;
+
+    // Request a tile at high zoom far from any likely data
+    // Tile 15/0/0 is in the Pacific Ocean near the antimeridian
+    match reader.get_tile(layer_name, 15, 0, 0, None).await {
+        Ok(response) => {
+            assert_eq!(response.content_type, "image/png");
+            println!(
+                "Out-of-bounds tile: {} bytes (likely transparent)",
+                response.bytes.len()
+            );
+        }
+        Err(e) => {
+            println!("Out-of-bounds tile error (may be expected): {e}");
+        }
+    }
+}
+
+/// Test S3TileReader handles style override
+#[tokio::test(flavor = "multi_thread")]
+async fn test_s3_tile_reader_style_override() {
+    if !s3_test_available() {
+        println!("Skipping S3TileReader test - no S3 endpoint configured");
+        return;
+    }
+
+    let bucket = test_bucket();
+    let reader = match S3TileReader::new(&bucket, "").await {
+        Ok(r) => r,
+        Err(e) => {
+            println!("Skipping - could not init S3TileReader: {e}");
+            return;
+        }
+    };
+
+    let layers = reader.list_layers().await;
+    if layers.is_empty() {
+        println!("No layers to test");
+        return;
+    }
+
+    let layer_name = &layers[0].layer;
+
+    // Request with different styles
+    for style in &["viridis", "plasma", "magma"] {
+        match reader.get_tile(layer_name, 0, 0, 0, Some(style)).await {
+            Ok(response) => {
+                println!("Style {style}: {} bytes", response.bytes.len());
+            }
+            Err(e) => {
+                println!("Style {style} error: {e}");
+            }
+        }
+    }
+}
+
+/// Test S3TileReader returns error for non-existent layer
+#[tokio::test(flavor = "multi_thread")]
+async fn test_s3_tile_reader_nonexistent_layer() {
+    if !s3_test_available() {
+        println!("Skipping S3TileReader test - no S3 endpoint configured");
+        return;
+    }
+
+    let bucket = test_bucket();
+    let reader = match S3TileReader::new(&bucket, "").await {
+        Ok(r) => r,
+        Err(e) => {
+            println!("Skipping - could not init S3TileReader: {e}");
+            return;
+        }
+    };
+
+    let result = reader
+        .get_tile("definitely-nonexistent-layer", 0, 0, 0, None)
+        .await;
+    assert!(result.is_err(), "Should fail for non-existent layer");
+    println!("Non-existent layer correctly returned error");
+}

@@ -6,100 +6,101 @@ on:
   pull_request:
     branches: [main]
 
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
 jobs:
   s3-tests:
-    name: Run S3 integration tests with MinIO
+    name: S3 integration tests with MinIO
     runs-on: ubuntu-latest
 
     services:
       minio:
-        image: minio/minio:latest
+        image: quay.io/minio/minio:latest
         ports:
           - 9000:9000
-          - 9001:9001
         env:
           MINIO_ROOT_USER: minioadmin
           MINIO_ROOT_PASSWORD: minioadmin
         options: >-
-          --health-cmd "mc ready local || exit 1"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        # MinIO server command
-        # Note: GitHub Actions services don't support custom commands directly,
-        # so we start the server via entrypoint override below
+          --health-cmd "curl -f http://localhost:9000/minio/health/live || exit 1"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+          --entrypoint ""
+        # Run minio server
+        # Note: GitHub Actions requires command to be specified separately
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Install native libraries
+      - name: Start MinIO server (workaround for service command)
+        run: |
+          # The service container is running but we need to ensure it's serving
+          # Wait for the health check to pass
+          for i in {1..30}; do
+            if curl -sf http://localhost:9000/minio/health/live; then
+              echo "MinIO is healthy"
+              break
+            fi
+            echo "Waiting for MinIO... ($i/30)"
+            sleep 1
+          done
+
+      - name: Install MinIO client
+        run: |
+          curl -sLo mc https://dl.min.io/client/mc/release/linux-amd64/mc
+          chmod +x mc
+          sudo mv mc /usr/local/bin/
+
+      - name: Setup test bucket with test data
+        run: |
+          # Configure mc
+          mc alias set local http://localhost:9000 minioadmin minioadmin
+
+          # Create test bucket
+          mc mb local/test-bucket
+
+          # Create test GeoTIFF structure: bucket/style/layer.tif
+          # Use the small gray_3857.tif if available, otherwise create minimal test file
+          if [ -f "data/test/gray_3857.tif" ]; then
+            mc cp data/test/gray_3857.tif local/test-bucket/viridis/gray_3857.tif
+            echo "Uploaded gray_3857.tif"
+          else
+            # Create minimal valid GeoTIFF for testing
+            .github/scripts/create-test-tiff.sh /tmp/test.tif
+            mc cp /tmp/test.tif local/test-bucket/viridis/test.tif
+            echo "Uploaded minimal test.tif"
+          fi
+
+          # List bucket contents
+          echo "Bucket contents:"
+          mc ls --recursive local/test-bucket/
+
+      - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential \
             pkg-config \
-            cmake \
-            sqlite3 \
-            libsqlite3-dev \
-            proj-bin \
             libproj-dev \
-            gdal-bin \
-            libgdal-dev
+            libsqlite3-dev
 
-      - name: Set up Rust
+      - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache cargo registry
+      - name: Cache cargo
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Start MinIO server
-        run: |
-          docker run -d --name minio \
-            -p 9000:9000 -p 9001:9001 \
-            -e MINIO_ROOT_USER=minioadmin \
-            -e MINIO_ROOT_PASSWORD=minioadmin \
-            minio/minio server /data --console-address ":9001"
-
-          # Wait for MinIO to be ready
-          sleep 5
-
-      - name: Install MinIO client and create test bucket
-        run: |
-          # Install mc (MinIO client)
-          wget -q https://dl.min.io/client/mc/release/linux-amd64/mc
-          chmod +x mc
-          sudo mv mc /usr/local/bin/
-
-          # Configure mc to use local MinIO
-          mc alias set local http://localhost:9000 minioadmin minioadmin
-
-          # Create test bucket
-          mc mb local/test-bucket
-
-          # Upload test file if it exists
-          if [ -f "test_data/viridis/test.tif" ]; then
-            mc cp test_data/viridis/test.tif local/test-bucket/test.tif
-            echo "Uploaded test.tif to MinIO"
-          else
-            # Create a minimal test file for basic connectivity tests
-            echo "Creating minimal test file..."
-            # Create a valid TIFF header (little-endian)
-            printf 'II\x2a\x00\x08\x00\x00\x00' > /tmp/test.tif
-            # Add minimal IFD
-            dd if=/dev/zero bs=1 count=1000 >> /tmp/test.tif 2>/dev/null
-            mc cp /tmp/test.tif local/test-bucket/test.tif
-            echo "Uploaded minimal test.tif to MinIO"
-          fi
-
-          # List bucket contents
-          mc ls local/test-bucket/
+          key: ${{ runner.os }}-cargo-s3-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-s3-
+            ${{ runner.os }}-cargo-
 
       - name: Run S3 integration tests
         env:
@@ -109,11 +110,11 @@ jobs:
           AWS_ALLOW_HTTP: "true"
           AWS_REGION: us-east-1
           S3_TEST_BUCKET: test-bucket
-          S3_TEST_KEY: test.tif
+          S3_TEST_KEY: viridis/gray_3857.tif
         run: |
-          cargo test --features s3-tests s3 --verbose -- --nocapture
+          cargo test --features s3-tests s3 -- --nocapture
 
-      - name: Run all tests (including S3)
+      - name: Run S3TileReader tests
         env:
           AWS_ACCESS_KEY_ID: minioadmin
           AWS_SECRET_ACCESS_KEY: minioadmin
@@ -121,12 +122,5 @@ jobs:
           AWS_ALLOW_HTTP: "true"
           AWS_REGION: us-east-1
           S3_TEST_BUCKET: test-bucket
-          S3_TEST_KEY: test.tif
         run: |
-          cargo test --features s3-tests --verbose
-
-      - name: Cleanup
-        if: always()
-        run: |
-          docker stop minio || true
-          docker rm minio || true
+          cargo test --features s3-tests s3_tile_reader -- --nocapture

@@ -210,7 +210,8 @@ impl RangeReader for S3RangeReader {
 /// Create a range reader from a path or URL
 pub fn create_range_reader(source: &str) -> AnyResult<Arc<dyn RangeReader>> {
     if source.starts_with("s3://") {
-        Ok(Arc::new(S3RangeReader::new(source)?))
+        // Use the proper S3 reader that supports credentials and custom endpoints
+        Ok(Arc::new(crate::reader::s3::S3RangeReaderSync::new(source)?))
     } else if source.starts_with("http://") || source.starts_with("https://") {
         Ok(Arc::new(HttpRangeReader::new(source)?))
     } else {
