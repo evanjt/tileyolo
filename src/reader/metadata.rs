@@ -49,8 +49,8 @@ fn default_is_tiled() -> bool {
 }
 
 impl LayerMetadata {
-    /// Build LayerMetadata from a full Layer
-    pub fn from_layer(layer: &Layer) -> Self {
+    /// Build `LayerMetadata` from a full Layer
+    #[must_use] pub fn from_layer(layer: &Layer) -> Self {
         let last_modified = layer
             .last_modified
             .duration_since(UNIX_EPOCH)
@@ -74,7 +74,7 @@ impl LayerMetadata {
         }
     }
 
-    /// Reconstruct a Layer (including style/colour_stops) from metadata + actual file path
+    /// Reconstruct a Layer (including `style/colour_stops`) from metadata + actual file path
     pub async fn to_layer(&self, path: &Path) -> Layer {
         // Style is determined at runtime from the immediate parent folder
         let style_name = path
@@ -125,7 +125,7 @@ impl LayerMetadata {
 pub type MetadataCache = HashMap<String, LayerMetadata>;
 
 /// Load the metadata cache from disk (or return empty on any error)
-pub fn load_cache(cache_path: &Path) -> MetadataCache {
+#[must_use] pub fn load_cache(cache_path: &Path) -> MetadataCache {
     let mut cache = MetadataCache::new();
     if let Ok(mut rdr) = ReaderBuilder::new().has_headers(true).from_path(cache_path) {
         for meta in rdr.deserialize::<LayerMetadata>().flatten() {
@@ -146,7 +146,7 @@ pub fn save_cache(cache_path: &Path, cache: &MetadataCache) {
 }
 
 /// Produce the key for a file (filename without extension only)
-pub fn key_for(path: &Path, _root: &Path) -> String {
+#[must_use] pub fn key_for(path: &Path, _root: &Path) -> String {
     path.file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or_default()

@@ -12,7 +12,7 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Check GeoTIFF files for COG compliance and optimal configuration
+    /// Check `GeoTIFF` files for COG compliance and optimal configuration
     Check {
         /// Files or directories to check (defaults to --data-folder)
         #[arg(value_name = "PATHS")]
@@ -116,9 +116,7 @@ fn run_compliance_check(
     let mut failed: Vec<(String, String)> = Vec::new(); // (filename, error)
 
     for file in &files_to_check {
-        let filename = file.file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| file.display().to_string());
+        let filename = file.file_name().map_or_else(|| file.display().to_string(), |n| n.to_string_lossy().to_string());
 
         match compliance::check_file(file) {
             Ok(report) => {
@@ -170,7 +168,7 @@ fn run_compliance_check(
             } else {
                 issues_str
             };
-            println!("│ {:<39} │ {:<6} │ {:<35} │", short_name, status, short_issues);
+            println!("│ {short_name:<39} │ {status:<6} │ {short_issues:<35} │");
         }
 
         // Print failed files
@@ -185,7 +183,7 @@ fn run_compliance_check(
             } else {
                 error.clone()
             };
-            println!("│ {:<39} │ ✗ FAIL │ {:<35} │", short_name, short_err);
+            println!("│ {short_name:<39} │ ✗ FAIL │ {short_err:<35} │");
         }
 
         println!("└─────────────────────────────────────────┴────────┴─────────────────────────────────────┘");
@@ -206,11 +204,9 @@ fn run_compliance_check(
         println!("mkdir -p ./cog_output\n");
         for file in needs_fixing {
             let input = file.to_string_lossy();
-            let filename = file.file_name()
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_else(|| "output.tif".to_string());
+            let filename = file.file_name().map_or_else(|| "output.tif".to_string(), |s| s.to_string_lossy().to_string());
             // Use OVERVIEW_RESAMPLING=NEAREST to preserve sparse data in overviews
-            println!("gdal_translate -of COG -co COMPRESS=DEFLATE -co BLOCKSIZE=512 -co OVERVIEW_RESAMPLING=NEAREST \"{}\" \"./cog_output/{}\"", input, filename);
+            println!("gdal_translate -of COG -co COMPRESS=DEFLATE -co BLOCKSIZE=512 -co OVERVIEW_RESAMPLING=NEAREST \"{input}\" \"./cog_output/{filename}\"");
         }
         println!("\n# After conversion, add statistics to all files:");
         println!("for f in ./cog_output/*.tif; do gdalinfo -stats \"$f\"; done");
@@ -269,11 +265,10 @@ fn collect_tiff_files(dir: &PathBuf) -> anyhow::Result<Vec<PathBuf>> {
 
 fn is_tiff_file(path: &PathBuf) -> bool {
     path.extension()
-        .map(|ext| {
+        .is_some_and(|ext| {
             let ext = ext.to_string_lossy().to_lowercase();
             ext == "tif" || ext == "tiff"
         })
-        .unwrap_or(false)
 }
 
 async fn run_server(data_folder: &str, port: u16) -> anyhow::Result<()> {

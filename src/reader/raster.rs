@@ -13,11 +13,11 @@ pub struct ArrayRasterSource {
 }
 
 impl ArrayRasterSource {
-    pub fn new(data: Arc<Array3<f32>>) -> Self {
+    #[must_use] pub fn new(data: Arc<Array3<f32>>) -> Self {
         Self { data }
     }
 
-    pub fn inner(&self) -> &Arc<Array3<f32>> {
+    #[must_use] pub fn inner(&self) -> &Arc<Array3<f32>> {
         &self.data
     }
 }

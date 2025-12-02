@@ -54,19 +54,18 @@ impl TileServer {
         let random_layer = layers.first().unwrap().layer.clone();
 
         println!(
-            r#"
-    🚀 TileYolo serving on {}
+            r"
+    🚀 TileYolo serving on {addr}
 
-    🗺️ QGIS XYZ-tiles path (on randomly picked layer: {})
-       → http://{}/tiles/{}/{{z}}/{{x}}/{{y}}
+    🗺️ QGIS XYZ-tiles path (on randomly picked layer: {random_layer})
+       → http://{addr}/tiles/{random_layer}/{{z}}/{{x}}/{{y}}
 
     🌍 Browse all loaded layers visually
-       → http://{}/map
+       → http://{addr}/map
 
     📚 Query for all layers (JSON)
-       → http://{}/layers
-            "#,
-            addr, random_layer, addr, random_layer, addr, addr
+       → http://{addr}/layers
+            "
         );
 
         axum::serve(listener, app.into_make_service())

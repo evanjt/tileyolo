@@ -1,5 +1,4 @@
 use lru::LruCache;
-use once_cell::sync::Lazy;
 use std::cmp::max;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
@@ -89,7 +88,7 @@ impl TileCache {
     }
 }
 
-static TILE_CACHE: Lazy<Mutex<TileCache>> = Lazy::new(|| {
+static TILE_CACHE: std::sync::LazyLock<Mutex<TileCache>> = std::sync::LazyLock::new(|| {
     let cap = max(CACHE_CAPACITY_BYTES, 64 * 1024 * 1024); // never below 64MB
     Mutex::new(TileCache::new(cap))
 });

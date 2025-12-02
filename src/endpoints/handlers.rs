@@ -35,7 +35,7 @@ pub async fn tile_handler(
     match reader.get_tile(&layer, z, x, y, query.style.as_deref()).await {
         Ok(tile_data) => tile_data.into_response(),
         Err(e) => {
-            eprintln!("Error generating tile: {:?}", e);
+            eprintln!("Error generating tile: {e:?}");
             (StatusCode::INTERNAL_SERVER_ERROR, "Error generating tile").into_response()
         }
     }

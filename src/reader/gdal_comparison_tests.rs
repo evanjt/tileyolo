@@ -485,8 +485,8 @@ mod tests {
             .args(["-wgs84", "-valonly", path, "-45", "45"])  // lon, lat
             .output();
 
-        if let Ok(output) = output {
-            if output.status.success() {
+        if let Ok(output) = output
+            && output.status.success() {
                 let value_str = String::from_utf8_lossy(&output.stdout);
                 if let Ok(expected_value) = value_str.trim().parse::<f32>() {
                     println!("GDAL value at lon=-45, lat=45: {}", expected_value);
@@ -525,7 +525,6 @@ mod tests {
                     }
                 }
             }
-        }
     }
 
     // ========================================================================
@@ -783,7 +782,7 @@ mod tests {
 
         for (i, ovr) in reader.overviews.iter().enumerate() {
             let floor_scale = full_width / ovr.width;
-            let ceiling_scale = (full_width + ovr.width - 1) / ovr.width;
+            let ceiling_scale = full_width.div_ceil(ovr.width);
 
             assert_eq!(
                 ovr.scale, floor_scale,
@@ -919,16 +918,14 @@ mod tests {
                 ])
                 .output();
 
-            if let Ok(output) = output {
-                if output.status.success() {
-                    if let Ok(gdal_data) = std::fs::read(&temp_file) {
+            if let Ok(output) = output
+                && output.status.success()
+                    && let Ok(gdal_data) = std::fs::read(&temp_file) {
                         let stats = DiffStats::compute(&our_data.pixels, &gdal_data);
                         println!("  {}: RMSE={:.2}, Max={:.2}, Within±1={:.1}%",
                             mode, stats.rmse, stats.max_diff,
                             100.0 * stats.pixels_within_1 as f32 / stats.pixels_compared.max(1) as f32);
                     }
-                }
-            }
 
             let _ = std::fs::remove_file(&temp_file);
             let _ = std::fs::remove_file(format!("{}.hdr", temp_file));
@@ -1467,8 +1464,8 @@ mod tests {
                 .args(["-wgs84", "-valonly", path, &lon.to_string(), &lat.to_string()])
                 .output();
 
-            if let Ok(output) = output {
-                if output.status.success() {
+            if let Ok(output) = output
+                && output.status.success() {
                     let gdal_value_str = String::from_utf8_lossy(&output.stdout);
                     if let Ok(gdal_value) = gdal_value_str.trim().parse::<f32>() {
                         // Get our value
@@ -1500,7 +1497,6 @@ mod tests {
                         }
                     }
                 }
-            }
         }
     }
 
@@ -2213,7 +2209,7 @@ mod tests {
         let mut total_diff = 0.0f64;
         let mut max_diff = 0.0f32;
 
-        for (_i, (s, t)) in stripped_tile.pixels.iter().zip(tiled_tile.pixels.iter()).enumerate() {
+        for (s, t) in stripped_tile.pixels.iter().zip(tiled_tile.pixels.iter()) {
             if s.is_nan() && t.is_nan() {
                 continue;
             }

@@ -47,8 +47,8 @@ impl TiffChunkedRasterSource {
         let chunk_width = chunk_width_u32.max(1) as usize;
         let chunk_height = chunk_height_u32.max(1) as usize;
 
-        let chunks_across = (width + chunk_width - 1) / chunk_width;
-        let chunks_down = (height + chunk_height - 1) / chunk_height;
+        let chunks_across = width.div_ceil(chunk_width);
+        let chunks_down = height.div_ceil(chunk_height);
 
         let pixel_scale = decoder
             .get_tag_f64_vec(Tag::ModelPixelScaleTag)
@@ -84,10 +84,10 @@ impl TiffChunkedRasterSource {
 
         if min_max_hint.is_none() {
             // fallback to reading via low-level utils to attempt metadata parse
-            if let Ok(mut file) = File::open(path) {
-                if let Ok(header) = read_tiff_header(&mut file) {
-                    if let Ok(ifd_entries) = read_ifd(&mut file, header.little_endian) {
-                        if let Ok(meta_string) = read_tag_string_from_ifd(
+            if let Ok(mut file) = File::open(path)
+                && let Ok(header) = read_tiff_header(&mut file)
+                    && let Ok(ifd_entries) = read_ifd(&mut file, header.little_endian)
+                        && let Ok(meta_string) = read_tag_string_from_ifd(
                             &mut file,
                             &ifd_entries,
                             header.little_endian,
@@ -95,9 +95,6 @@ impl TiffChunkedRasterSource {
                         ) {
                             min_max_hint = parse_gdal_metadata_stats(&meta_string);
                         }
-                    }
-                }
-            }
         }
 
         Ok(Self {
@@ -296,15 +293,15 @@ impl RasterSource for TiffChunkedRasterSource {
 
 fn convert_decoding_result(result: DecodingResult) -> Vec<f32> {
     match result {
-        DecodingResult::U8(data) => data.into_iter().map(|v| v as f32).collect(),
-        DecodingResult::U16(data) => data.into_iter().map(|v| v as f32).collect(),
+        DecodingResult::U8(data) => data.into_iter().map(f32::from).collect(),
+        DecodingResult::U16(data) => data.into_iter().map(f32::from).collect(),
         DecodingResult::U32(data) => data.into_iter().map(|v| v as f32).collect(),
-        DecodingResult::I8(data) => data.into_iter().map(|v| v as f32).collect(),
-        DecodingResult::I16(data) => data.into_iter().map(|v| v as f32).collect(),
+        DecodingResult::I8(data) => data.into_iter().map(f32::from).collect(),
+        DecodingResult::I16(data) => data.into_iter().map(f32::from).collect(),
         DecodingResult::I32(data) => data.into_iter().map(|v| v as f32).collect(),
         DecodingResult::F32(data) => data,
         DecodingResult::F64(data) => data.into_iter().map(|v| v as f32).collect(),
-        DecodingResult::F16(data) => data.into_iter().map(|v| f32::from(v)).collect(),
+        DecodingResult::F16(data) => data.into_iter().map(f32::from).collect(),
         DecodingResult::U64(data) => data.into_iter().map(|v| v as f32).collect(),
         DecodingResult::I64(data) => data.into_iter().map(|v| v as f32).collect(),
     }

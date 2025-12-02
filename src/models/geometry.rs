@@ -73,7 +73,7 @@ impl GeometryExtent {
     /// Get the center point of the extent
     #[inline]
     pub fn center(&self) -> (f64, f64) {
-        ((self.minx + self.maxx) / 2.0, (self.miny + self.maxy) / 2.0)
+        (f64::midpoint(self.minx, self.maxx), f64::midpoint(self.miny, self.maxy))
     }
 
     /// Check if the extent is valid (non-empty, non-inverted)

@@ -1,7 +1,7 @@
 use std::f64::consts::PI;
 use proj::Proj;
 
-/// WebMercator constants
+/// `WebMercator` constants
 const R_MAJOR: f64 = 6378137.0;
 const MAX_LAT: f64 = 85.05112877980659; // Max bounds for Web Mercator
 
@@ -13,12 +13,12 @@ pub fn create_transformer(source_epsg: u32) -> Result<Option<Proj>, String> {
         return Ok(None);
     }
 
-    let source_crs = format!("EPSG:{}", source_epsg);
+    let source_crs = format!("EPSG:{source_epsg}");
 
     // Create transformer from 3857 to source CRS
     Proj::new_known_crs("EPSG:3857", &source_crs, None)
         .map(Some)
-        .map_err(|e| format!("Failed to create transformer from EPSG:3857 to {}: {}", source_crs, e))
+        .map_err(|e| format!("Failed to create transformer from EPSG:3857 to {source_crs}: {e}"))
 }
 
 /// Transform coordinates from EPSG:3857 to the source CRS

@@ -28,17 +28,16 @@ fn test_lzw_fallback() {
 
                 let mut unique_count = 0;
                 for (i, sample) in samples.iter().enumerate() {
-                    if let Some(value) = sample {
-                        if i == 0
+                    if let Some(value) = sample
+                        && (i == 0
                             || !samples
                                 .iter()
                                 .take(i)
                                 .filter_map(|s| *s)
-                                .any(|v| v == *value)
+                                .any(|v| v == *value))
                         {
                             unique_count += 1;
                         }
-                    }
                 }
 
                 if unique_count == 0 {

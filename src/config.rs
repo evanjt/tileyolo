@@ -33,7 +33,7 @@ impl Default for Config {
 }
 
 impl Config {
-    pub fn parse_path_to_absolute(path: &PathBuf) -> PathBuf {
+    #[must_use] pub fn parse_path_to_absolute(path: &PathBuf) -> PathBuf {
         // Convert the path to an absolute path
         let path = PathBuf::from(path);
         if path.is_absolute() {
@@ -45,7 +45,7 @@ impl Config {
         }
     }
 
-    pub fn default_data_folder() -> String {
+    #[must_use] pub fn default_data_folder() -> String {
         // Render the config data_folder as a string with the current path
         // to form an absolute path
         let default_data_dir = Self::default().data_folder.clone();
@@ -55,7 +55,7 @@ impl Config {
             .into_owned()
     }
 
-    pub fn default_port() -> u16 {
+    #[must_use] pub fn default_port() -> u16 {
         // Return the default port
         Self::default().port
     }

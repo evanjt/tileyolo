@@ -54,7 +54,7 @@ impl LayerGeometry {
             _ => {
                 let proj = proj::Proj::new_known_crs(
                     format!("EPSG:{}", self.crs_code).as_str(),
-                    format!("EPSG:{}", target_crs).as_str(),
+                    format!("EPSG:{target_crs}").as_str(),
                     None,
                 )
                 .unwrap();

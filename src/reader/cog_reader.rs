@@ -1,4 +1,4 @@
-//! Pure Rust COG (Cloud Optimized GeoTIFF) reader
+//! Pure Rust COG (Cloud Optimized `GeoTIFF`) reader
 //!
 //! This module implements efficient COG reading following the COG specification:
 //! - Reads only the IFD metadata on initialization (typically < 16KB)
@@ -9,7 +9,7 @@
 //! Key optimizations:
 //! - Min/max from GDAL statistics tags (no full scan needed)
 //! - Data type detection from TIFF tags (no trial-and-error)
-//! - CRS detection from GeoKey directory
+//! - CRS detection from `GeoKey` directory
 //! - Single transform inversion per tile (not per pixel)
 
 use crate::reader::range_reader::{create_range_reader, RangeReader};
@@ -69,7 +69,7 @@ pub enum CogDataType {
 }
 
 impl CogDataType {
-    pub fn bytes_per_sample(&self) -> usize {
+    #[must_use] pub fn bytes_per_sample(&self) -> usize {
         match self {
             CogDataType::UInt8 | CogDataType::Int8 => 1,
             CogDataType::UInt16 | CogDataType::Int16 => 2,
@@ -79,7 +79,7 @@ impl CogDataType {
     }
 
     /// Detect data type from TIFF tags
-    pub fn from_tags(bits_per_sample: u16, sample_format: u16) -> Option<Self> {
+    #[must_use] pub fn from_tags(bits_per_sample: u16, sample_format: u16) -> Option<Self> {
         match (sample_format, bits_per_sample) {
             (SAMPLE_FORMAT_UINT, 8) => Some(CogDataType::UInt8),
             (SAMPLE_FORMAT_UINT, 16) => Some(CogDataType::UInt16),
@@ -110,7 +110,7 @@ pub enum Compression {
 }
 
 impl Compression {
-    pub fn from_tag(value: u16) -> Option<Self> {
+    #[must_use] pub fn from_tag(value: u16) -> Option<Self> {
         match value {
             COMPRESSION_NONE => Some(Compression::None),
             COMPRESSION_LZW => Some(Compression::Lzw),
@@ -121,10 +121,10 @@ impl Compression {
     }
 }
 
-/// GeoTIFF transform information
+/// `GeoTIFF` transform information
 #[derive(Debug, Clone)]
 pub struct GeoTransform {
-    /// Pixel scale (x_scale, y_scale, z_scale)
+    /// Pixel scale (`x_scale`, `y_scale`, `z_scale`)
     pub pixel_scale: Option<[f64; 3]>,
     /// Tiepoint (i, j, k, x, y, z) - maps pixel (i,j,k) to world (x,y,z)
     pub tiepoint: Option<[f64; 6]>,
@@ -132,7 +132,7 @@ pub struct GeoTransform {
 
 impl GeoTransform {
     /// Convert pixel coordinates to world coordinates
-    pub fn pixel_to_world(&self, px: f64, py: f64) -> Option<(f64, f64)> {
+    #[must_use] pub fn pixel_to_world(&self, px: f64, py: f64) -> Option<(f64, f64)> {
         let scale = self.pixel_scale?;
         let tie = self.tiepoint?;
 
@@ -143,7 +143,7 @@ impl GeoTransform {
     }
 
     /// Convert world coordinates to pixel coordinates
-    pub fn world_to_pixel(&self, wx: f64, wy: f64) -> Option<(f64, f64)> {
+    #[must_use] pub fn world_to_pixel(&self, wx: f64, wy: f64) -> Option<(f64, f64)> {
         let scale = self.pixel_scale?;
         let tie = self.tiepoint?;
 
@@ -158,7 +158,7 @@ impl GeoTransform {
     }
 
     /// Get the world extent of the image
-    pub fn get_extent(&self, width: usize, height: usize) -> Option<(f64, f64, f64, f64)> {
+    #[must_use] pub fn get_extent(&self, width: usize, height: usize) -> Option<(f64, f64, f64, f64)> {
         let (minx, maxy) = self.pixel_to_world(0.0, 0.0)?;
         let (maxx, miny) = self.pixel_to_world(width as f64, height as f64)?;
         Some((minx, miny, maxx, maxy))
@@ -217,18 +217,18 @@ pub struct CogMetadata {
     pub stats_min: Option<f32>,
     pub stats_max: Option<f32>,
 
-    /// NoData value
+    /// `NoData` value
     pub nodata: Option<f64>,
 }
 
 impl CogMetadata {
     /// Check if this appears to be a valid COG (has tiles)
-    pub fn is_tiled(&self) -> bool {
+    #[must_use] pub fn is_tiled(&self) -> bool {
         self.tile_width > 0 && self.tile_height > 0
     }
 
     /// Get tile index for a pixel coordinate
-    pub fn tile_index_for_pixel(&self, px: usize, py: usize) -> Option<usize> {
+    #[must_use] pub fn tile_index_for_pixel(&self, px: usize, py: usize) -> Option<usize> {
         if px >= self.width || py >= self.height {
             return None;
         }
@@ -238,7 +238,7 @@ impl CogMetadata {
     }
 
     /// Get pixel range within a tile
-    pub fn pixel_range_in_tile(&self, tile_index: usize) -> (usize, usize, usize, usize) {
+    #[must_use] pub fn pixel_range_in_tile(&self, tile_index: usize) -> (usize, usize, usize, usize) {
         let tile_col = tile_index % self.tiles_across;
         let tile_row = tile_index / self.tiles_across;
 
@@ -251,13 +251,13 @@ impl CogMetadata {
     }
 
     /// Get number of valid pixels in a tile (handles edge tiles)
-    pub fn tile_pixel_count(&self, tile_index: usize) -> usize {
+    #[must_use] pub fn tile_pixel_count(&self, tile_index: usize) -> usize {
         let (start_x, start_y, end_x, end_y) = self.pixel_range_in_tile(tile_index);
         (end_x - start_x) * (end_y - start_y) * self.bands
     }
 }
 
-/// Overview metadata - subset of CogMetadata for overviews
+/// Overview metadata - subset of `CogMetadata` for overviews
 #[derive(Debug, Clone)]
 pub struct OverviewMetadata {
     pub width: usize,
@@ -274,7 +274,7 @@ pub struct OverviewMetadata {
 
 impl OverviewMetadata {
     /// Get tile index for a pixel coordinate at this overview level
-    pub fn tile_index_for_pixel(&self, px: usize, py: usize) -> Option<usize> {
+    #[must_use] pub fn tile_index_for_pixel(&self, px: usize, py: usize) -> Option<usize> {
         if px >= self.width || py >= self.height {
             return None;
         }
@@ -315,7 +315,7 @@ impl CogReader {
 
         let version = read_u16(&header_bytes[2..4], little_endian);
         if version != 42 {
-            return Err(format!("Invalid TIFF version: {}", version).into());
+            return Err(format!("Invalid TIFF version: {version}").into());
         }
 
         let ifd_offset = read_u32(&header_bytes[4..8], little_endian);
@@ -323,10 +323,10 @@ impl CogReader {
 
         // Read IFD entries - estimate size based on typical COG (usually < 4KB)
         // Clamp to available bytes if IFD is near end of file
-        let ifd_size_estimate = 4096.min((file_size - ifd_offset as u64) as usize);
-        let ifd_bytes = reader.read_range(ifd_offset as u64, ifd_size_estimate)?;
+        let ifd_size_estimate = 4096.min((file_size - u64::from(ifd_offset)) as usize);
+        let ifd_bytes = reader.read_range(u64::from(ifd_offset), ifd_size_estimate)?;
 
-        let (metadata, next_ifd_offset) = parse_ifd_with_next(&ifd_bytes, &reader, ifd_offset as u64, little_endian)?;
+        let (metadata, next_ifd_offset) = parse_ifd_with_next(&ifd_bytes, &reader, u64::from(ifd_offset), little_endian)?;
 
         // Read overview IFDs (subsequent IFDs in the chain)
         let mut overviews = Vec::new();
@@ -334,10 +334,10 @@ impl CogReader {
         let full_width = metadata.width;
 
         while current_ifd_offset != 0 {
-            let ovr_ifd_size = 4096.min((file_size - current_ifd_offset as u64) as usize);
-            let ovr_ifd_bytes = reader.read_range(current_ifd_offset as u64, ovr_ifd_size)?;
+            let ovr_ifd_size = 4096.min((file_size - u64::from(current_ifd_offset)) as usize);
+            let ovr_ifd_bytes = reader.read_range(u64::from(current_ifd_offset), ovr_ifd_size)?;
 
-            if let Ok((ovr_meta, next_offset)) = parse_overview_ifd(&ovr_ifd_bytes, &reader, current_ifd_offset as u64, little_endian, &metadata) {
+            if let Ok((ovr_meta, next_offset)) = parse_overview_ifd(&ovr_ifd_bytes, &reader, u64::from(current_ifd_offset), little_endian, &metadata) {
                 // Calculate actual scale from dimensions using floor division
                 // This matches GDAL's behavior: scale = full_width / ovr_width
                 // For 20966/1310 this gives 16, not 17 (ceiling would be wrong)
@@ -441,13 +441,13 @@ impl CogReader {
     /// Find the best overview level for a given source extent size
     ///
     /// Parameters:
-    /// - extent_src_width: How many source pixels the extent covers at full resolution
-    /// - extent_src_height: How many source pixels the extent covers at full resolution
-    /// - output_width: How many pixels we're actually rendering (e.g., 256)
-    /// - output_height: How many pixels we're actually rendering (e.g., 256)
+    /// - `extent_src_width`: How many source pixels the extent covers at full resolution
+    /// - `extent_src_height`: How many source pixels the extent covers at full resolution
+    /// - `output_width`: How many pixels we're actually rendering (e.g., 256)
+    /// - `output_height`: How many pixels we're actually rendering (e.g., 256)
     ///
     /// Returns None if full resolution should be used
-    pub fn best_overview_for_resolution(&self, extent_src_width: usize, extent_src_height: usize) -> Option<usize> {
+    #[must_use] pub fn best_overview_for_resolution(&self, extent_src_width: usize, extent_src_height: usize) -> Option<usize> {
         // If min_usable_overview is None, ALL overviews are too sparse - always use full resolution
         // This is critical for sparse datasets where even the largest overview has insufficient data
         if self.min_usable_overview.is_none() && !self.overviews.is_empty() {
@@ -478,12 +478,11 @@ impl CogReader {
         for (idx, ovr) in self.overviews.iter().enumerate() {
             // Skip overviews that have been determined to have insufficient data
             // min_usable_overview = Some(n) means only overviews 0..=n have enough data
-            if let Some(min_usable) = self.min_usable_overview {
-                if idx > min_usable {
+            if let Some(min_usable) = self.min_usable_overview
+                && idx > min_usable {
                     // This overview is too sparse (beyond the minimum usable level)
                     continue;
                 }
-            }
 
             // This overview has 1/scale resolution compared to full
             // We can use it if the overview has at least as many pixels as we need
@@ -501,7 +500,7 @@ impl CogReader {
     /// Read a tile from a specific overview level
     pub fn read_overview_tile(&self, overview_idx: usize, tile_index: usize) -> AnyResult<Vec<f32>> {
         let ovr = self.overviews.get(overview_idx)
-            .ok_or_else(|| format!("Overview index {} out of range", overview_idx))?;
+            .ok_or_else(|| format!("Overview index {overview_idx} out of range"))?;
 
         if tile_index >= ovr.tile_offsets.len() {
             return Err(format!(
@@ -596,9 +595,8 @@ impl CogReader {
 
     /// Sample a single pixel value
     pub fn sample(&self, band: usize, x: usize, y: usize) -> AnyResult<Option<f32>> {
-        let tile_index = match self.metadata.tile_index_for_pixel(x, y) {
-            Some(idx) => idx,
-            None => return Ok(None),
+        let Some(tile_index) = self.metadata.tile_index_for_pixel(x, y) else {
+            return Ok(None);
         };
 
         let tile_data = self.read_tile(tile_index)?;
@@ -715,11 +713,10 @@ impl CogReader {
                 if val.is_nan() {
                     continue;
                 }
-                if let Some(nd) = nodata {
-                    if (val as f64 - nd).abs() < 0.001 {
+                if let Some(nd) = nodata
+                    && (f64::from(val) - nd).abs() < 0.001 {
                         continue;
                     }
-                }
                 if val < min {
                     min = val;
                 }
@@ -837,10 +834,10 @@ fn parse_ifd(
     let predictor = get_tag_value(&tags, TAG_PREDICTOR, little_endian).unwrap_or(1) as u16;
 
     let data_type = CogDataType::from_tags(bits_per_sample, sample_format)
-        .ok_or_else(|| format!("Unsupported data type: bits={}, format={}", bits_per_sample, sample_format))?;
+        .ok_or_else(|| format!("Unsupported data type: bits={bits_per_sample}, format={sample_format}"))?;
 
     let compression = Compression::from_tag(compression_val)
-        .ok_or_else(|| format!("Unsupported compression: {}", compression_val))?;
+        .ok_or_else(|| format!("Unsupported compression: {compression_val}"))?;
 
     // Detect if tiled or stripped TIFF
     let has_tile_tags = tags.contains_key(&TAG_TILE_OFFSETS);
@@ -852,8 +849,8 @@ fn parse_ifd(
         // Tiled TIFF (COG-optimized)
         let tw = get_tag_value(&tags, TAG_TILE_WIDTH, little_endian).unwrap_or(width as u32) as usize;
         let th = get_tag_value(&tags, TAG_TILE_LENGTH, little_endian).unwrap_or(height as u32) as usize;
-        let ta = (width + tw - 1) / tw;
-        let td = (height + th - 1) / th;
+        let ta = width.div_ceil(tw);
+        let td = height.div_ceil(th);
         let total_tiles = ta * td;
 
         let offsets = read_tag_array_u64(
@@ -883,7 +880,7 @@ fn parse_ifd(
         let tw = width; // Strip width = image width
         let th = rows_per_strip;
         let ta = 1; // Only 1 "tile" across (strips span full width)
-        let td = (height + rows_per_strip - 1) / rows_per_strip;
+        let td = height.div_ceil(rows_per_strip);
         let total_strips = td;
 
         let offsets = read_tag_array_u64(
@@ -1042,8 +1039,8 @@ fn parse_overview_ifd(
     let tile_height = get_tag_value(&tags, TAG_TILE_LENGTH, little_endian)
         .ok_or("Overview missing TileLength tag")? as usize;
 
-    let tiles_across = (width + tile_width - 1) / tile_width;
-    let tiles_down = (height + tile_height - 1) / tile_height;
+    let tiles_across = width.div_ceil(tile_width);
+    let tiles_down = height.div_ceil(tile_height);
     let total_tiles = tiles_across * tiles_down;
 
     // Read tile offsets and byte counts
@@ -1096,8 +1093,8 @@ fn get_tag_value(tags: &HashMap<u16, IfdEntry>, tag: u16, little_endian: bool) -
     if entry.count == 1 && type_size <= 4 {
         // Value is inline
         match entry.field_type {
-            1 => Some(entry.raw_bytes[0] as u32),
-            3 => Some(read_u16(&entry.raw_bytes, little_endian) as u32),
+            1 => Some(u32::from(entry.raw_bytes[0])),
+            3 => Some(u32::from(read_u16(&entry.raw_bytes, little_endian))),
             4 => Some(read_u32(&entry.raw_bytes, little_endian)),
             _ => None,
         }
@@ -1114,7 +1111,7 @@ fn read_tag_array_u64(
     little_endian: bool,
     expected_count: usize,
 ) -> AnyResult<Vec<u64>> {
-    let entry = tags.get(&tag).ok_or_else(|| format!("Missing tag {}", tag))?;
+    let entry = tags.get(&tag).ok_or_else(|| format!("Missing tag {tag}"))?;
 
     let type_size = match entry.field_type {
         3 => 2, // SHORT
@@ -1128,15 +1125,15 @@ fn read_tag_array_u64(
     let raw_bytes = if total_bytes <= 4 {
         entry.raw_bytes[..total_bytes].to_vec()
     } else {
-        reader.read_range(entry.value_offset as u64, total_bytes)?
+        reader.read_range(u64::from(entry.value_offset), total_bytes)?
     };
 
     let mut values = Vec::with_capacity(entry.count as usize);
     for i in 0..entry.count as usize {
         let offset = i * type_size;
         let value = match entry.field_type {
-            3 => read_u16(&raw_bytes[offset..], little_endian) as u64,
-            4 => read_u32(&raw_bytes[offset..], little_endian) as u64,
+            3 => u64::from(read_u16(&raw_bytes[offset..], little_endian)),
+            4 => u64::from(read_u32(&raw_bytes[offset..], little_endian)),
             16 => read_u64(&raw_bytes[offset..], little_endian),
             _ => 0,
         };
@@ -1159,9 +1156,8 @@ fn read_tag_f64_array(
     little_endian: bool,
     min_count: usize,
 ) -> AnyResult<Option<Vec<f64>>> {
-    let entry = match tags.get(&tag) {
-        Some(e) => e,
-        None => return Ok(None),
+    let Some(entry) = tags.get(&tag) else {
+        return Ok(None);
     };
 
     if entry.field_type != 12 {
@@ -1174,7 +1170,7 @@ fn read_tag_f64_array(
     }
 
     let total_bytes = entry.count as usize * 8;
-    let raw_bytes = reader.read_range(entry.value_offset as u64, total_bytes)?;
+    let raw_bytes = reader.read_range(u64::from(entry.value_offset), total_bytes)?;
 
     let mut values = Vec::with_capacity(entry.count as usize);
     for i in 0..entry.count as usize {
@@ -1191,9 +1187,8 @@ fn read_crs_from_geokeys(
     _ifd_offset: u64,
     little_endian: bool,
 ) -> AnyResult<Option<i32>> {
-    let entry = match tags.get(&TAG_GEO_KEY_DIRECTORY) {
-        Some(e) => e,
-        None => return Ok(None),
+    let Some(entry) = tags.get(&TAG_GEO_KEY_DIRECTORY) else {
+        return Ok(None);
     };
 
     // GeoKey directory is an array of SHORT values
@@ -1205,7 +1200,7 @@ fn read_crs_from_geokeys(
     let raw_bytes = if total_bytes <= 4 {
         entry.raw_bytes[..total_bytes].to_vec()
     } else {
-        reader.read_range(entry.value_offset as u64, total_bytes)?
+        reader.read_range(u64::from(entry.value_offset), total_bytes)?
     };
 
     // Parse GeoKey directory header
@@ -1232,10 +1227,10 @@ fn read_crs_from_geokeys(
 
         // Check for ProjectedCSTypeGeoKey (3072) or GeographicTypeGeoKey (2048)
         if key_id == GEO_KEY_PROJECTED_CRS && value > 0 {
-            return Ok(Some(value as i32));
+            return Ok(Some(i32::from(value)));
         }
         if key_id == GEO_KEY_GEOGRAPHIC_TYPE && value > 0 {
-            return Ok(Some(value as i32));
+            return Ok(Some(i32::from(value)));
         }
     }
 
@@ -1248,9 +1243,8 @@ fn read_gdal_stats(
     _ifd_offset: u64,
     _little_endian: bool,
 ) -> AnyResult<(Option<f32>, Option<f32>)> {
-    let entry = match tags.get(&TAG_GDAL_METADATA) {
-        Some(e) => e,
-        None => return Ok((None, None)),
+    let Some(entry) = tags.get(&TAG_GDAL_METADATA) else {
+        return Ok((None, None));
     };
 
     // GDAL metadata is ASCII/UTF-8 XML
@@ -1258,7 +1252,7 @@ fn read_gdal_stats(
     let raw_bytes = if total_bytes <= 4 {
         entry.raw_bytes[..total_bytes].to_vec()
     } else {
-        reader.read_range(entry.value_offset as u64, total_bytes)?
+        reader.read_range(u64::from(entry.value_offset), total_bytes)?
     };
 
     let metadata_str = String::from_utf8_lossy(&raw_bytes);
@@ -1271,7 +1265,7 @@ fn read_gdal_stats(
 }
 
 fn extract_gdal_stat(metadata: &str, key: &str) -> Option<f32> {
-    let needle = format!("name=\"{}\"", key);
+    let needle = format!("name=\"{key}\"");
     let pos = metadata.find(&needle)?;
     let rest = &metadata[pos..];
     let start = rest.find('>')? + 1;
@@ -1295,7 +1289,7 @@ fn read_gdal_nodata(
     let raw_bytes = if total_bytes <= 4 {
         entry.raw_bytes[..total_bytes].to_vec()
     } else {
-        reader.read_range(entry.value_offset as u64, total_bytes)?
+        reader.read_range(u64::from(entry.value_offset), total_bytes)?
     };
 
     let nodata_str = String::from_utf8_lossy(&raw_bytes);
@@ -1390,7 +1384,7 @@ fn apply_predictor(
 
             Ok(result)
         }
-        _ => Err(format!("Unsupported predictor: {}", predictor).into()),
+        _ => Err(format!("Unsupported predictor: {predictor}").into()),
     }
 }
 
@@ -1404,20 +1398,20 @@ fn convert_to_f32(data: &[u8], data_type: CogDataType, little_endian: bool) -> A
         let bytes = &data[offset..offset + bytes_per_sample];
 
         let value = match data_type {
-            CogDataType::UInt8 => bytes[0] as f32,
-            CogDataType::Int8 => bytes[0] as i8 as f32,
+            CogDataType::UInt8 => f32::from(bytes[0]),
+            CogDataType::Int8 => f32::from(bytes[0] as i8),
             CogDataType::UInt16 => {
                 if little_endian {
-                    u16::from_le_bytes([bytes[0], bytes[1]]) as f32
+                    f32::from(u16::from_le_bytes([bytes[0], bytes[1]]))
                 } else {
-                    u16::from_be_bytes([bytes[0], bytes[1]]) as f32
+                    f32::from(u16::from_be_bytes([bytes[0], bytes[1]]))
                 }
             }
             CogDataType::Int16 => {
                 if little_endian {
-                    i16::from_le_bytes([bytes[0], bytes[1]]) as f32
+                    f32::from(i16::from_le_bytes([bytes[0], bytes[1]]))
                 } else {
-                    i16::from_be_bytes([bytes[0], bytes[1]]) as f32
+                    f32::from(i16::from_be_bytes([bytes[0], bytes[1]]))
                 }
             }
             CogDataType::UInt32 => {
@@ -1636,7 +1630,7 @@ fn test_overview_scale_uses_floor_division() {
         );
 
         // Also verify it's NOT using ceiling division
-        let ceiling_scale = (full_width + ovr.width - 1) / ovr.width;
+        let ceiling_scale = full_width.div_ceil(ovr.width);
         if ceiling_scale != expected_scale {
             // If ceiling would give different result, make sure we're using floor
             assert_ne!(
@@ -1703,7 +1697,7 @@ fn test_overview_pixel_values_match_gdal() {
         // At tile position (0, 0) in overview 3, GDAL shows value ~176
         let corner_value = tile_data[0];
         assert!(
-            !corner_value.is_nan() && corner_value >= 100.0 && corner_value <= 255.0,
+            !corner_value.is_nan() && (100.0..=255.0).contains(&corner_value),
             "Corner value should be valid grayscale, got {}",
             corner_value
         );

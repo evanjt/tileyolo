@@ -1,6 +1,6 @@
 //! COG Compliance Checker
 //!
-//! Validates GeoTIFF files against TileYolo's requirements for optimal performance.
+//! Validates `GeoTIFF` files against `TileYolo`'s requirements for optimal performance.
 //! Reports issues and provides recommendations for fixing non-compliant files.
 
 use crate::reader::cog_reader::{CogReader, Compression};
@@ -65,15 +65,15 @@ pub struct FileDetails {
 }
 
 impl ComplianceReport {
-    pub fn critical_issues(&self) -> Vec<&ComplianceIssue> {
+    #[must_use] pub fn critical_issues(&self) -> Vec<&ComplianceIssue> {
         self.issues.iter().filter(|i| i.severity == Severity::Critical).collect()
     }
 
-    pub fn error_issues(&self) -> Vec<&ComplianceIssue> {
+    #[must_use] pub fn error_issues(&self) -> Vec<&ComplianceIssue> {
         self.issues.iter().filter(|i| i.severity == Severity::Error).collect()
     }
 
-    pub fn warning_issues(&self) -> Vec<&ComplianceIssue> {
+    #[must_use] pub fn warning_issues(&self) -> Vec<&ComplianceIssue> {
         self.issues.iter().filter(|i| i.severity == Severity::Warning).collect()
     }
 }
@@ -83,7 +83,7 @@ pub fn check_file<P: AsRef<Path>>(path: P) -> Result<ComplianceReport, String> {
     let path_str = path.as_ref().to_string_lossy().to_string();
 
     let reader = CogReader::open(&path_str)
-        .map_err(|e| format!("Failed to open file: {}", e))?;
+        .map_err(|e| format!("Failed to open file: {e}"))?;
 
     let metadata = &reader.metadata;
     let mut issues = Vec::new();
@@ -129,7 +129,7 @@ pub fn check_file<P: AsRef<Path>>(path: P) -> Result<ComplianceReport, String> {
             issues.push(ComplianceIssue {
                 severity: Severity::Warning,
                 code: "NON_STANDARD_TILE_SIZE",
-                message: format!("Non-standard tile size: {}x{}", tw, th),
+                message: format!("Non-standard tile size: {tw}x{th}"),
                 recommendation: "Use 512x512 tiles for optimal COG performance. \
                     256x256 is also acceptable."
                     .to_string(),
@@ -200,18 +200,17 @@ pub fn check_file<P: AsRef<Path>>(path: P) -> Result<ComplianceReport, String> {
     }
 
     // Check 7: Web Mercator (EPSG:3857) is optimal
-    if let Some(crs) = metadata.crs_code {
-        if crs != 3857 {
+    if let Some(crs) = metadata.crs_code
+        && crs != 3857 {
             issues.push(ComplianceIssue {
                 severity: Severity::Warning,
                 code: "NON_WEB_MERCATOR",
-                message: format!("File uses EPSG:{} instead of Web Mercator (EPSG:3857)", crs),
+                message: format!("File uses EPSG:{crs} instead of Web Mercator (EPSG:3857)"),
                 recommendation: "Consider reprojecting to EPSG:3857 for optimal web tile \
                     serving. Other CRS will work but require coordinate transformation."
                     .to_string(),
             });
         }
-    }
 
     // Check 8: Compression (LZW or DEFLATE recommended)
     if matches!(metadata.compression, Compression::None) {
@@ -315,7 +314,7 @@ pub fn check_file<P: AsRef<Path>>(path: P) -> Result<ComplianceReport, String> {
 }
 
 /// Recommended GDAL command for creating a compliant COG
-pub fn recommended_gdal_command(input_file: &str, output_file: &str) -> String {
+#[must_use] pub fn recommended_gdal_command(input_file: &str, output_file: &str) -> String {
     format!(
         r#"# Create a COG with all recommended settings:
 gdal_translate \
@@ -325,30 +324,27 @@ gdal_translate \
   -co BLOCKSIZE=512 \
   -co OVERVIEWS=AUTO \
   -co OVERVIEW_RESAMPLING=AVERAGE \
-  "{input}" \
-  "{output}"
+  "{input_file}" \
+  "{output_file}"
 
 # For SPARSE DATA (crop yields, scattered measurements, etc.) use NEAREST instead:
 # gdal_translate -of COG -co COMPRESS=DEFLATE -co BLOCKSIZE=512 \
-#   -co OVERVIEW_RESAMPLING=NEAREST "{input}" "{output}"
+#   -co OVERVIEW_RESAMPLING=NEAREST "{input_file}" "{output_file}"
 # NEAREST preserves individual data points in overviews instead of averaging to zero.
 
 # Then add statistics:
-gdalinfo -stats "{output}"
+gdalinfo -stats "{output_file}"
 
 # Verify the result:
-gdalinfo "{output}" | grep -E "Block=|Overviews:|STATISTICS_"
-"#,
-        input = input_file,
-        output = output_file
+gdalinfo "{output_file}" | grep -E "Block=|Overviews:|STATISTICS_"
+"#
     )
 }
 
 /// Short version of GDAL command
-pub fn gdal_command_short(input_file: &str, output_file: &str) -> String {
+#[must_use] pub fn gdal_command_short(input_file: &str, output_file: &str) -> String {
     format!(
-        "gdal_translate -of COG -co COMPRESS=DEFLATE -co BLOCKSIZE=512 \"{}\" \"{}\" && gdalinfo -stats \"{}\"",
-        input_file, output_file, output_file
+        "gdal_translate -of COG -co COMPRESS=DEFLATE -co BLOCKSIZE=512 \"{input_file}\" \"{output_file}\" && gdalinfo -stats \"{output_file}\""
     )
 }
 
@@ -364,7 +360,7 @@ pub fn print_report(report: &ComplianceReport) {
     println!("  Data Type:    {}", report.details.data_type);
     println!("  Tiled:        {}", if report.details.is_tiled { "Yes" } else { "No (stripped)" });
     if let Some((tw, th)) = report.details.tile_size {
-        println!("  Tile Size:    {}x{}", tw, th);
+        println!("  Tile Size:    {tw}x{th}");
     }
     println!("  Compression:  {}", report.details.compression);
     println!("  Overviews:    {}", if report.details.has_overviews {
@@ -453,7 +449,7 @@ impl BatchSummary {
             let mut counts: Vec<_> = self.issue_counts.iter().collect();
             counts.sort_by(|a, b| b.1.cmp(a.1));
             for (code, count) in counts {
-                println!("  {}: {} files", code, count);
+                println!("  {code}: {count} files");
             }
         }
 

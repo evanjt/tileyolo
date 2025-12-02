@@ -40,7 +40,7 @@ impl LzwRasterSource {
     pub fn open(path: &PathBuf) -> AnyResult<Self> {
         let mut file = File::open(path)?;
         let header = read_tiff_header(&mut file)?;
-        file.seek(SeekFrom::Start(header.first_ifd_offset as u64))?;
+        file.seek(SeekFrom::Start(u64::from(header.first_ifd_offset)))?;
         let ifd_entries = read_ifd(&mut file, header.little_endian)?;
 
         let image_width = read_tag_u32(
@@ -68,8 +68,7 @@ impl LzwRasterSource {
 
         if bits_per_sample % 8 != 0 {
             return Err(format!(
-                "Unsupported BitsPerSample value {} (must be byte aligned)",
-                bits_per_sample
+                "Unsupported BitsPerSample value {bits_per_sample} (must be byte aligned)"
             )
             .into());
         }
@@ -77,8 +76,7 @@ impl LzwRasterSource {
         let bytes_per_sample = bits_per_sample / 8;
         if bytes_per_sample != 1 {
             return Err(format!(
-                "Unsupported bytes per sample {} (only 8-bit samples supported in fallback)",
-                bytes_per_sample
+                "Unsupported bytes per sample {bytes_per_sample} (only 8-bit samples supported in fallback)"
             )
             .into());
         }
@@ -101,8 +99,7 @@ impl LzwRasterSource {
         )?;
         if compression != 5 {
             return Err(format!(
-                "Unsupported compression scheme {} (expected LZW)",
-                compression
+                "Unsupported compression scheme {compression} (expected LZW)"
             )
             .into());
         }
@@ -118,8 +115,7 @@ impl LzwRasterSource {
         .unwrap_or(1) as u32;
         if predictor != 1 && predictor != 2 {
             return Err(format!(
-                "Unsupported predictor {} (only none and horizontal differencing supported)",
-                predictor
+                "Unsupported predictor {predictor} (only none and horizontal differencing supported)"
             )
             .into());
         }
@@ -135,8 +131,7 @@ impl LzwRasterSource {
         .unwrap_or(1);
         if planar_configuration != 1 {
             return Err(format!(
-                "Unsupported planar configuration {} (only chunky pixels supported)",
-                planar_configuration
+                "Unsupported planar configuration {planar_configuration} (only chunky pixels supported)"
             )
             .into());
         }
@@ -152,8 +147,7 @@ impl LzwRasterSource {
         .unwrap_or(1);
         if sample_format != 1 {
             return Err(format!(
-                "Unsupported sample format {} (only unsigned integer supported)",
-                sample_format
+                "Unsupported sample format {sample_format} (only unsigned integer supported)"
             )
             .into());
         }
@@ -186,8 +180,8 @@ impl LzwRasterSource {
                     header.little_endian,
                 )? as usize;
 
-                let tiles_across = (image_width + tile_width - 1) / tile_width;
-                let tiles_down = (image_length + tile_length - 1) / tile_length;
+                let tiles_across = image_width.div_ceil(tile_width);
+                let tiles_down = image_length.div_ceil(tile_length);
 
                 if offsets.len() != counts.len() {
                     return Err("TileOffsets and TileByteCounts length mismatch".into());
@@ -205,7 +199,7 @@ impl LzwRasterSource {
                 }
 
                 let offsets_u64: Arc<Vec<u64>> =
-                    Arc::new(offsets.into_iter().map(|value| value as u64).collect());
+                    Arc::new(offsets.into_iter().map(u64::from).collect());
                 let counts_arc: Arc<Vec<u32>> = Arc::new(counts);
 
                 (
@@ -245,7 +239,7 @@ impl LzwRasterSource {
                 let offsets_u64: Arc<Vec<u64>> = Arc::new(
                     strip_offsets
                         .into_iter()
-                        .map(|value| value as u64)
+                        .map(u64::from)
                         .collect(),
                 );
                 let counts_arc: Arc<Vec<u32>> = Arc::new(strip_byte_counts);
@@ -556,7 +550,7 @@ fn decompress_lzw_tile(
     tile_index: usize,
 ) -> AnyResult<Arc<Vec<f32>>> {
     if tile_index >= offsets.len() {
-        return Err(format!("Tile index {} out of range", tile_index).into());
+        return Err(format!("Tile index {tile_index} out of range").into());
     }
 
     let offset = offsets[tile_index];
@@ -588,7 +582,7 @@ fn decompress_lzw_tile(
     let mut values = vec![f32::NAN; tile_width * tile_length * samples_per_pixel];
     let valid_samples = actual_bytes.min(decompressed.len()).min(values.len());
     for idx in 0..valid_samples {
-        values[idx] = decompressed[idx] as f32;
+        values[idx] = f32::from(decompressed[idx]);
     }
 
     Ok(Arc::new(values))

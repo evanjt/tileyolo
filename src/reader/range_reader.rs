@@ -15,7 +15,7 @@ use crate::reader::tiff_utils::AnyResult;
 ///
 /// This abstraction allows the same COG reading code to work with:
 /// - Local files (using seek + read)
-/// - S3 objects (using GetObject with Range header)
+/// - S3 objects (using `GetObject` with Range header)
 /// - HTTP URLs (using Range header)
 pub trait RangeReader: Send + Sync {
     /// Read a range of bytes from the source
@@ -124,7 +124,7 @@ impl RangeReader for HttpRangeReader {
     }
 }
 
-/// S3 range reader using object_store
+/// S3 range reader using `object_store`
 pub struct S3RangeReader {
     #[allow(dead_code)]
     bucket: String,
@@ -136,7 +136,7 @@ pub struct S3RangeReader {
 }
 
 impl S3RangeReader {
-    /// Create from an S3 URL like s3://bucket/key
+    /// Create from an S3 URL like <s3://bucket/key>
     pub fn new(url: &str) -> AnyResult<Self> {
         // Parse s3://bucket/key format
         let url_parsed = url::Url::parse(url)?;

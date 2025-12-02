@@ -7,7 +7,6 @@
 
 use crate::models::geometry::GeometryExtent;
 use crate::reader::raster::RasterSource;
-use std::sync::Arc;
 
 /// A synthetic raster source for testing with predictable patterns
 pub struct SyntheticRaster {

@@ -16,3 +16,6 @@ pub mod test_utils;
 
 #[cfg(test)]
 mod gdal_comparison_tests;
+
+#[cfg(all(test, feature = "s3-tests"))]
+mod s3_tests;

@@ -177,7 +177,7 @@ pub fn read_entry_values_u32(
         }
     } else {
         let current_pos = file.stream_position()?;
-        file.seek(SeekFrom::Start(entry.value_offset as u64))?;
+        file.seek(SeekFrom::Start(u64::from(entry.value_offset)))?;
         file.read_exact(&mut raw_bytes)?;
         file.seek(SeekFrom::Start(current_pos))?;
     }
@@ -187,9 +187,9 @@ pub fn read_entry_values_u32(
         let value = match entry.field_type {
             3 => {
                 if little_endian {
-                    u16::from_le_bytes([chunk[0], chunk[1]]) as u32
+                    u32::from(u16::from_le_bytes([chunk[0], chunk[1]]))
                 } else {
-                    u16::from_be_bytes([chunk[0], chunk[1]]) as u32
+                    u32::from(u16::from_be_bytes([chunk[0], chunk[1]]))
                 }
             }
             4 => {
@@ -228,7 +228,7 @@ pub fn read_entry_values_f64(
     }
 
     let current_pos = file.stream_position()?;
-    file.seek(SeekFrom::Start(entry.value_offset as u64))?;
+    file.seek(SeekFrom::Start(u64::from(entry.value_offset)))?;
     file.read_exact(&mut raw_bytes)?;
     file.seek(SeekFrom::Start(current_pos))?;
 
@@ -255,12 +255,11 @@ pub fn read_tag_u32(
     tag: u16,
     little_endian: bool,
 ) -> AnyResult<u32> {
-    let entry = get_entry(entries, tag).ok_or_else(|| format!("Tag {} not found", tag))?;
+    let entry = get_entry(entries, tag).ok_or_else(|| format!("Tag {tag} not found"))?;
     let values = read_entry_values_u32(file, entry, little_endian)?;
-    values
-        .get(0)
+    values.first()
         .copied()
-        .ok_or_else(|| format!("Tag {} missing value", tag).into())
+        .ok_or_else(|| format!("Tag {tag} missing value").into())
 }
 
 pub fn read_tag_u32_vec(
@@ -269,7 +268,7 @@ pub fn read_tag_u32_vec(
     tag: u16,
     little_endian: bool,
 ) -> AnyResult<Vec<u32>> {
-    let entry = get_entry(entries, tag).ok_or_else(|| format!("Tag {} not found", tag))?;
+    let entry = get_entry(entries, tag).ok_or_else(|| format!("Tag {tag} not found"))?;
     read_entry_values_u32(file, entry, little_endian)
 }
 
@@ -291,7 +290,7 @@ pub fn read_tag_string_from_ifd(
     little_endian: bool,
     tag: u16,
 ) -> AnyResult<String> {
-    let entry = get_entry(entries, tag).ok_or_else(|| format!("Tag {} not found", tag))?;
+    let entry = get_entry(entries, tag).ok_or_else(|| format!("Tag {tag} not found"))?;
     let total_bytes = entry.count as usize;
     let mut raw_bytes = vec![0u8; total_bytes];
 
@@ -306,7 +305,7 @@ pub fn read_tag_string_from_ifd(
         }
     } else {
         let current_pos = file.stream_position()?;
-        file.seek(SeekFrom::Start(entry.value_offset as u64))?;
+        file.seek(SeekFrom::Start(u64::from(entry.value_offset)))?;
         file.read_exact(&mut raw_bytes)?;
         file.seek(SeekFrom::Start(current_pos))?;
     }
@@ -318,11 +317,11 @@ pub fn read_tag_string_from_ifd(
     Ok(String::from_utf8_lossy(&raw_bytes).to_string())
 }
 
-fn get_entry<'a>(entries: &'a [IfdEntry], tag: u16) -> Option<&'a IfdEntry> {
+fn get_entry(entries: &[IfdEntry], tag: u16) -> Option<&IfdEntry> {
     entries.iter().find(|entry| entry.tag == tag)
 }
 
-pub fn parse_gdal_metadata_stats(metadata: &str) -> Option<(f32, f32)> {
+#[must_use] pub fn parse_gdal_metadata_stats(metadata: &str) -> Option<(f32, f32)> {
     let min = extract_metadata_value(metadata, "STATISTICS_MINIMUM")?;
     let max = extract_metadata_value(metadata, "STATISTICS_MAXIMUM")?;
     Some((min, max))
@@ -331,7 +330,7 @@ pub fn parse_gdal_metadata_stats(metadata: &str) -> Option<(f32, f32)> {
 pub fn read_primary_compression(path: &Path) -> AnyResult<Option<u16>> {
     let mut file = File::open(path)?;
     let header = read_tiff_header(&mut file)?;
-    file.seek(SeekFrom::Start(header.first_ifd_offset as u64))?;
+    file.seek(SeekFrom::Start(u64::from(header.first_ifd_offset)))?;
     let ifd_entries = read_ifd(&mut file, header.little_endian)?;
     match read_tag_u32(
         &mut file,
@@ -385,7 +384,7 @@ pub fn read_tag_f64_six(
 }
 
 fn extract_metadata_value(metadata: &str, key: &str) -> Option<f32> {
-    let needle = format!("name=\"{}\"", key);
+    let needle = format!("name=\"{key}\"");
     let pos = metadata.find(&needle)?;
     let rest = &metadata[pos..];
     let start = rest.find('>')? + 1;

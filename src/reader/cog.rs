@@ -10,7 +10,6 @@ use geo::{AffineTransform, Coord};
 use image::{ColorType, ImageEncoder, Rgba, RgbaImage, codecs::png::PngEncoder};
 use lru::LruCache;
 use ndarray::Array3;
-use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::num::NonZeroUsize;
@@ -25,25 +24,25 @@ const MAX_CACHED_SOURCES: usize = 50;
 
 // Cache for CogReader instances (efficient windowed reading)
 const MAX_CACHED_COG_READERS: usize = 50;
-static COG_READER_CACHE: Lazy<std::sync::Mutex<LruCache<String, Arc<CogReader>>>> =
-    Lazy::new(|| std::sync::Mutex::new(LruCache::new(NonZeroUsize::new(MAX_CACHED_COG_READERS).unwrap())));
+static COG_READER_CACHE: std::sync::LazyLock<std::sync::Mutex<LruCache<String, Arc<CogReader>>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(LruCache::new(NonZeroUsize::new(MAX_CACHED_COG_READERS).unwrap())));
 
-static SOURCE_CACHE: Lazy<std::sync::Mutex<LruCache<String, (CachedSource, AffineTransform<f64>)>>> =
-    Lazy::new(|| std::sync::Mutex::new(LruCache::new(NonZeroUsize::new(MAX_CACHED_SOURCES).unwrap())));
+static SOURCE_CACHE: std::sync::LazyLock<std::sync::Mutex<LruCache<String, (CachedSource, AffineTransform<f64>)>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(LruCache::new(NonZeroUsize::new(MAX_CACHED_SOURCES).unwrap())));
 
 // Use a better synchronization approach with Arc<Mutex<Option<...>>> for proper waiting
-static LOADING_FILES: Lazy<
+static LOADING_FILES: std::sync::LazyLock<
     std::sync::Mutex<
         HashMap<
             String,
             std::sync::Arc<std::sync::Mutex<Option<(CachedSource, AffineTransform<f64>)>>>,
         >,
     >,
-> = Lazy::new(|| std::sync::Mutex::new(HashMap::new()));
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
 
 // Cache for files that have failed to load - with reduced persistence for retry attempts
-static FAILED_FILES: Lazy<std::sync::Mutex<HashMap<String, (String, std::time::Instant)>>> =
-    Lazy::new(|| std::sync::Mutex::new(HashMap::new()));
+static FAILED_FILES: std::sync::LazyLock<std::sync::Mutex<HashMap<String, (String, std::time::Instant)>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
 
 // Only keep failures in cache for 5 minutes to allow retry
 const FAILURE_CACHE_DURATION: std::time::Duration = std::time::Duration::from_secs(300);
@@ -113,7 +112,7 @@ impl RasterReadResult {
             RasterReadResult::Array(array) => {
                 let mut min = f32::INFINITY;
                 let mut max = f32::NEG_INFINITY;
-                for &val in array.iter() {
+                for &val in array {
                     if val.is_nan() {
                         continue;
                     }
@@ -162,7 +161,7 @@ fn load_cog_data(
                 error = %error_msg,
                 "Using recent cached failure"
             );
-            return Err(format!("Recent cached failure: {}", error_msg).into());
+            return Err(format!("Recent cached failure: {error_msg}").into());
         }
     }
 
@@ -296,7 +295,7 @@ fn build_affine_transform(
     }
 }
 
-/// Try to read GeoTIFF with different data types and convert to f32, returning a streamed source when needed.
+/// Try to read `GeoTIFF` with different data types and convert to f32, returning a streamed source when needed.
 pub fn try_read_geotiff_with_flexible_type(
     path: &PathBuf,
 ) -> Result<RasterReadResult, Box<dyn std::error::Error + Send + Sync>> {
@@ -310,7 +309,7 @@ pub fn try_read_geotiff_with_flexible_type(
             Ok(result) => result,
             Err(panic_info) => {
                 let error_msg = match panic_info.downcast::<String>() {
-                    Ok(s) => format!("Panic occurred while reading GeoTIFF: {}", s),
+                    Ok(s) => format!("Panic occurred while reading GeoTIFF: {s}"),
                     Err(_) => "Unknown panic occurred while reading GeoTIFF".to_string(),
                 };
                 error!("{}", error_msg);
@@ -382,11 +381,10 @@ pub fn try_read_geotiff_with_flexible_type(
         }
     }
 
-    if last_error.contains("compression")
+    if (last_error.contains("compression")
         || last_error.contains("LZW")
-        || last_error.contains("unsupported")
-    {
-        if compression == Some(5) {
+        || last_error.contains("unsupported"))
+        && compression == Some(5) {
             debug!(path = %path.display(), "Retrying LZW/chunked fallbacks");
             if let Ok(lzw_source) = crate::reader::lzw_fallback::try_read_lzw_tiff_fallback(path) {
                 info!(path = %path.display(), "Successfully initialized streamed LZW reader on retry");
@@ -397,7 +395,6 @@ pub fn try_read_geotiff_with_flexible_type(
                 return Ok(RasterReadResult::Chunked(chunked_source));
             }
         }
-    }
 
     Err(format!(
         "Failed to read COG file '{}' with any supported data type. This may be due to:\n\
@@ -412,7 +409,7 @@ pub fn try_read_geotiff_with_flexible_type(
 fn try_read_as_u8(path: &PathBuf) -> Result<Array3<f32>, Box<dyn std::error::Error + Send + Sync>> {
     let file = std::fs::File::open(path)?;
     let array: Array3<u8> = cog3pio::io::geotiff::read_geotiff(file)?;
-    Ok(array.mapv(|x| x as f32))
+    Ok(array.mapv(f32::from))
 }
 
 fn try_read_as_u16(
@@ -420,7 +417,7 @@ fn try_read_as_u16(
 ) -> Result<Array3<f32>, Box<dyn std::error::Error + Send + Sync>> {
     let file = std::fs::File::open(path)?;
     let array: Array3<u16> = cog3pio::io::geotiff::read_geotiff(file)?;
-    Ok(array.mapv(|x| x as f32))
+    Ok(array.mapv(f32::from))
 }
 
 fn try_read_as_i16(
@@ -428,7 +425,7 @@ fn try_read_as_i16(
 ) -> Result<Array3<f32>, Box<dyn std::error::Error + Send + Sync>> {
     let file = std::fs::File::open(path)?;
     let array: Array3<i16> = cog3pio::io::geotiff::read_geotiff(file)?;
-    Ok(array.mapv(|x| x as f32))
+    Ok(array.mapv(f32::from))
 }
 
 fn try_read_as_u32(
@@ -462,7 +459,7 @@ fn try_read_as_f64(
     Ok(array.mapv(|x| x as f32))
 }
 
-/// Try reading with explicit LZW support using cog3pio's CogReader for better control
+/// Try reading with explicit LZW support using cog3pio's `CogReader` for better control
 fn try_read_with_cog3pio_reader(
     path: &PathBuf,
 ) -> Result<Array3<f32>, Box<dyn std::error::Error + Send + Sync>> {
@@ -505,7 +502,7 @@ fn try_read_with_cog3pio_reader(
 }
 
 /// Convert world coordinates to pixel coordinates using inverse transform
-pub fn world_to_pixel(world_coord: Coord<f64>, transform: &AffineTransform<f64>) -> Coord<f64> {
+#[must_use] pub fn world_to_pixel(world_coord: Coord<f64>, transform: &AffineTransform<f64>) -> Coord<f64> {
     // Get the inverse transform
     let inv_transform = transform.inverse();
 
@@ -544,12 +541,9 @@ fn extract_tile_region(
     let mut valid_pixels = 0;
 
     // OPTIMIZATION: Compute inverse transform ONCE instead of 65,536 times
-    let inv_transform = match transform.inverse() {
-        Some(inv) => inv,
-        None => {
-            // Non-invertible transform, fall back to direct sampling
-            return extract_tile_region_direct(source, tile_size);
-        }
+    let Some(inv_transform) = transform.inverse() else {
+        // Non-invertible transform, fall back to direct sampling
+        return extract_tile_region_direct(source, tile_size);
     };
 
     // Pre-compute the transform coefficients for incremental stepping
@@ -600,14 +594,13 @@ fn extract_tile_region(
                 let src_xi = src_x as isize;
                 let src_yi = src_y as isize;
 
-                if src_xi >= 0 && src_xi < width as isize && src_yi >= 0 && src_yi < height as isize {
-                    if let Some(pixel_value) = source.sample(0, src_xi as usize, src_yi as usize) {
+                if src_xi >= 0 && src_xi < width as isize && src_yi >= 0 && src_yi < height as isize
+                    && let Some(pixel_value) = source.sample(0, src_xi as usize, src_yi as usize) {
                         if !pixel_value.is_nan() {
                             valid_pixels += 1;
                         }
                         pixel_data[y * tile_size_x + x] = pixel_value;
                     }
-                }
             }
 
             // Step to next pixel in row (incremental, no transform needed!)
@@ -637,7 +630,7 @@ fn extract_tile_region_direct(
     Ok(vec![f32::NAN; tile_size_x * tile_size_y])
 }
 
-/// Get or create a cached CogReader for efficient windowed reading
+/// Get or create a cached `CogReader` for efficient windowed reading
 fn get_cog_reader(path: &PathBuf) -> Result<Arc<CogReader>, Box<dyn std::error::Error + Send + Sync>> {
     let path_str = path.to_string_lossy().to_string();
 
@@ -670,7 +663,7 @@ pub struct TileData {
     pub bands: usize,
 }
 
-/// Extract tile data using CogReader's efficient windowed reading
+/// Extract tile data using `CogReader`'s efficient windowed reading
 /// This reads only the necessary TIFF tiles, not the entire file
 ///
 /// OPTIMIZED: Pre-computes coordinate transforms, pre-loads needed tiles
@@ -684,15 +677,14 @@ pub fn extract_tile_with_cog_reader(
     let geo_transform = &metadata.geo_transform;
 
     // Pre-compute the affine transform from output pixel to source pixel
-    let (base_scale, _tiepoint) = match (geo_transform.pixel_scale, geo_transform.tiepoint) {
-        (Some(s), Some(t)) => (s, t),
-        _ => return Err("Missing geotransform".into()),
+    let (Some(base_scale), Some(_tiepoint)) = (geo_transform.pixel_scale, geo_transform.tiepoint) else {
+        return Err("Missing geotransform".into());
     };
 
     // Create coordinate transformer from EPSG:3857 (tile coords) to source CRS
     let source_epsg = metadata.crs_code.unwrap_or(3857) as u32;
     let transformer = crate::geometry::projection::create_transformer(source_epsg)
-        .map_err(|e| format!("CRS transformation error: {}", e))?;
+        .map_err(|e| format!("CRS transformation error: {e}"))?;
 
     // Convert extent to source CRS to get geographic extent
     let (src_minx, src_miny) = crate::geometry::projection::transform_coords(&transformer, extent_3857.minx, extent_3857.miny);
@@ -724,12 +716,11 @@ fn extract_tile_with_overview(
     // Create coordinate transformer from EPSG:3857 (tile coords) to source CRS
     let source_epsg = metadata.crs_code.unwrap_or(3857) as u32;
     let transformer = crate::geometry::projection::create_transformer(source_epsg)
-        .map_err(|e| format!("CRS transformation error: {}", e))?;
+        .map_err(|e| format!("CRS transformation error: {e}"))?;
 
     // Pre-compute the affine transform from output pixel to source pixel
-    let (base_scale, tiepoint) = match (geo_transform.pixel_scale, geo_transform.tiepoint) {
-        (Some(s), Some(t)) => (s, t),
-        _ => return Err("Missing geotransform".into()),
+    let (Some(base_scale), Some(tiepoint)) = (geo_transform.pixel_scale, geo_transform.tiepoint) else {
+        return Err("Missing geotransform".into());
     };
 
     // Get effective metadata for the level we're using
@@ -779,15 +770,14 @@ fn extract_tile_with_overview(
         let src_py = tiepoint[1] + (tiepoint[4] - world_y) / scale[1];
 
         if src_px >= 0.0 && src_px < eff_width as f64 &&
-           src_py >= 0.0 && src_py < eff_height as f64 {
-            if let Some(idx) = tile_index_at_level(src_px as usize, src_py as usize) {
+           src_py >= 0.0 && src_py < eff_height as f64
+            && let Some(idx) = tile_index_at_level(src_px as usize, src_py as usize) {
                 needed_tiles.insert(idx);
             }
-        }
     }
 
     // Also add tiles between the corners (for larger output areas)
-    let max_tile_count = if let Some(_) = overview_idx {
+    let max_tile_count = if overview_idx.is_some() {
         // Using an overview - limit tile count is reasonable
         let ovr = &reader.overviews[overview_idx.unwrap()];
         ovr.tile_offsets.len()
@@ -1127,10 +1117,10 @@ fn render_single_band_tile(
                     let b = &w[1];
                     if scaled >= a.value && scaled <= b.value {
                         let t = (scaled - a.value) / (b.value - a.value);
-                        let r = ((1.0 - t) * a.red as f32 + t * b.red as f32) as u8;
-                        let g = ((1.0 - t) * a.green as f32 + t * b.green as f32) as u8;
-                        let b_ = ((1.0 - t) * a.blue as f32 + t * b.blue as f32) as u8;
-                        let a_ = ((1.0 - t) * a.alpha as f32 + t * b.alpha as f32) as u8;
+                        let r = ((1.0 - t) * f32::from(a.red) + t * f32::from(b.red)) as u8;
+                        let g = ((1.0 - t) * f32::from(a.green) + t * f32::from(b.green)) as u8;
+                        let b_ = ((1.0 - t) * f32::from(a.blue) + t * f32::from(b.blue)) as u8;
+                        let a_ = ((1.0 - t) * f32::from(a.alpha) + t * f32::from(b.alpha)) as u8;
                         colour = Rgba([r, g, b_, a_]);
                         break;
                     }
@@ -1196,10 +1186,7 @@ mod tests {
         let result = process_cog(layer.path.clone(), extent, layer, tile_size).await;
 
         // Expected to fail without proper test data
-        match result {
-            Ok(_) => {}
-            Err(_) => {}
-        }
+        if let Ok(_) = result {}
     }
 
     // ========================================================================
@@ -1453,10 +1440,8 @@ mod tests {
 
     #[test]
     fn test_colour_stop_interpolation() {
-        let stops = vec![
-            ColourStop { value: 0.0, red: 0, green: 0, blue: 0, alpha: 255 },
-            ColourStop { value: 100.0, red: 255, green: 255, blue: 255, alpha: 255 },
-        ];
+        let stops = [ColourStop { value: 0.0, red: 0, green: 0, blue: 0, alpha: 255 },
+            ColourStop { value: 100.0, red: 255, green: 255, blue: 255, alpha: 255 }];
 
         // Test interpolation at midpoint
         let scaled = 50.0;
@@ -1658,9 +1643,9 @@ mod tests {
 
             // GDAL reference statistics:
             // min=120, max=251, mean=173.9
-            assert!(min >= 100.0 && min <= 140.0, "Min should be ~120, got {}", min);
-            assert!(max >= 230.0 && max <= 260.0, "Max should be ~251, got {}", max);
-            assert!(mean >= 160.0 && mean <= 190.0, "Mean should be ~174, got {}", mean);
+            assert!((100.0..=140.0).contains(&min), "Min should be ~120, got {}", min);
+            assert!((230.0..=260.0).contains(&max), "Max should be ~251, got {}", max);
+            assert!((160.0..=190.0).contains(&mean), "Mean should be ~174, got {}", mean);
         }
     }
 

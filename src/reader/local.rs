@@ -41,13 +41,12 @@ impl LocalTileReader {
                 e.path()
                     .extension()
                     .and_then(|s| s.to_str())
-                    .map(|ext| {
+                    .is_some_and(|ext| {
                         ext.eq_ignore_ascii_case("tif")
                             || ext.eq_ignore_ascii_case("tiff")
                             || ext.eq_ignore_ascii_case("geotiff")
                             || ext.eq_ignore_ascii_case("geotif")
                     })
-                    .unwrap_or(false)
             })
             .collect();
 
@@ -87,7 +86,7 @@ impl LocalTileReader {
                 .to_string();
 
             // track bytes read
-            let file_bytes = entry.metadata().ok().map(|m| m.len()).unwrap_or(0);
+            let file_bytes = entry.metadata().ok().map_or(0, |m| m.len());
             loaded_bytes += file_bytes;
 
             let message = format!(
@@ -111,15 +110,14 @@ impl LocalTileReader {
                 .as_secs();
 
             // If unchanged (size + mtime), reuse metadata; style re‐derived from path
-            if let Some(meta) = old_cache.get(&rel_key) {
-                if meta.size_bytes == file_bytes && meta.last_modified == last_modified_secs {
+            if let Some(meta) = old_cache.get(&rel_key)
+                && meta.size_bytes == file_bytes && meta.last_modified == last_modified_secs {
                     let layer = meta.to_layer(&path).await;
                     layers.push(layer.clone());
                     new_cache.insert(rel_key.clone(), meta.clone());
                     pb.inc(1);
                     continue;
                 }
-            }
 
             // Otherwise read fresh via COG reader
             let layer = match Self::get_tiff_metadata(entry).await {
@@ -128,23 +126,23 @@ impl LocalTileReader {
                     let err_str = e.to_string();
                     // Categorize errors with user-friendly descriptions
                     let reason = if err_str.contains("Missing tag 324") || err_str.contains("Missing tag 325") {
-                        pb.println(format!("   ⚠ Skipping: {} (not tiled)", file_stem));
+                        pb.println(format!("   ⚠ Skipping: {file_stem} (not tiled)"));
                         "not_tiled"
                     } else if err_str.contains("Unsupported compression") {
                         // Extract compression code if present
-                        pb.println(format!("   ⚠ Skipping: {} (unsupported compression)", file_stem));
+                        pb.println(format!("   ⚠ Skipping: {file_stem} (unsupported compression)"));
                         "unsupported_compression"
                     } else if err_str.contains("Invalid TIFF") || err_str.contains("Invalid signature") {
-                        pb.println(format!("   ⚠ Skipping: {} (not a valid TIFF)", file_stem));
+                        pb.println(format!("   ⚠ Skipping: {file_stem} (not a valid TIFF)"));
                         "invalid_tiff"
                     } else if err_str.contains("geotransform") || err_str.contains("tiepoint") || err_str.contains("pixel_scale") {
-                        pb.println(format!("   ⚠ Skipping: {} (missing georeferencing)", file_stem));
+                        pb.println(format!("   ⚠ Skipping: {file_stem} (missing georeferencing)"));
                         "no_georef"
                     } else if err_str.contains("failed to fill whole buffer") {
-                        pb.println(format!("   ⚠ Skipping: {} (file read error)", file_stem));
+                        pb.println(format!("   ⚠ Skipping: {file_stem} (file read error)"));
                         "read_error"
                     } else {
-                        pb.println(format!("   ⚠ Skipping: {} ({})", file_stem, err_str));
+                        pb.println(format!("   ⚠ Skipping: {file_stem} ({err_str})"));
                         "other"
                     };
                     skipped_files.push((path, reason.to_string()));
@@ -192,7 +190,7 @@ impl LocalTileReader {
 
             for (reason, count) in &by_reason {
                 let desc = reason_descriptions.get(reason).unwrap_or(&"Unknown issue");
-                let content = format!("  {:>2} file(s): {}", count, desc);
+                let content = format!("  {count:>2} file(s): {desc}");
                 let padding = 66usize.saturating_sub(content.len());
                 println!("│{}{}│", content, " ".repeat(padding));
             }
@@ -230,10 +228,10 @@ impl LocalTileReader {
                 };
                 let pa = priority(&a.style);
                 let pb = priority(&b.style);
-                if pa != pb {
-                    pa.cmp(&pb)
-                } else {
+                if pa == pb {
                     a.style.cmp(&b.style)
+                } else {
+                    pa.cmp(&pb)
                 }
             });
         }
@@ -328,7 +326,7 @@ impl LocalTileReader {
 }
 
 /// Pre-generated transparent 256x256 PNG tile (cached to avoid regenerating)
-static TRANSPARENT_TILE: once_cell::sync::Lazy<Vec<u8>> = once_cell::sync::Lazy::new(|| {
+static TRANSPARENT_TILE: std::sync::LazyLock<Vec<u8>> = std::sync::LazyLock::new(|| {
     use image::{RgbaImage, codecs::png::PngEncoder, ColorType, ImageEncoder};
     use std::io::Cursor;
 
@@ -346,7 +344,7 @@ impl TileReader for LocalTileReader {
         let mut all_layers: Vec<Layer> = self
             .layers
             .values()
-            .flat_map(|layers| layers.clone())
+            .flat_map(std::clone::Clone::clone)
             .collect();
         all_layers.sort_by(|a, b| a.layer.cmp(&b.layer));
         all_layers
@@ -366,7 +364,7 @@ impl TileReader for LocalTileReader {
             .layers
             .get(layer)
             .and_then(|styles| styles.first())
-            .ok_or_else(|| format!("Layer not found: '{}'", layer))?;
+            .ok_or_else(|| format!("Layer not found: '{layer}'"))?;
 
         // If a style override is requested, create a modified layer with the new style
         let layer_obj = if let Some(style_name) = style {
@@ -386,15 +384,14 @@ impl TileReader for LocalTileReader {
 
         // OPTIMIZATION: Early rejection if tile doesn't intersect layer extent
         // This avoids loading COG data for tiles that are completely outside the layer
-        if let Some(layer_extent_3857) = layer_obj.cached_geometry.get(&3857) {
-            if !layer_extent_3857.extent.intersects(&tile_extent) {
+        if let Some(layer_extent_3857) = layer_obj.cached_geometry.get(&3857)
+            && !layer_extent_3857.extent.intersects(&tile_extent) {
                 // Return pre-cached transparent tile without any processing
                 return Ok(TileResponse {
                     content_type: "image/png".into(),
                     bytes: TRANSPARENT_TILE.clone(),
                 });
             }
-        }
 
         // Process the tile
         let png_data = process_cog(
@@ -416,11 +413,11 @@ impl TileReader for LocalTileReader {
 fn tile_bounds_to_3857(z: u8, x: u32, y: u32) -> GeometryExtent {
     let tile_size = 256.0;
     let initial_resolution = 2.0 * 20037508.342789244 / tile_size;
-    let res = initial_resolution / (2f64.powi(z as i32));
-    let minx = x as f64 * tile_size * res - 20037508.342789244;
-    let maxx = (x as f64 + 1.0) * tile_size * res - 20037508.342789244;
-    let maxy = 20037508.342789244 - y as f64 * tile_size * res;
-    let miny = 20037508.342789244 - (y as f64 + 1.0) * tile_size * res;
+    let res = initial_resolution / (2f64.powi(i32::from(z)));
+    let minx = f64::from(x) * tile_size * res - 20037508.342789244;
+    let maxx = (f64::from(x) + 1.0) * tile_size * res - 20037508.342789244;
+    let maxy = 20037508.342789244 - f64::from(y) * tile_size * res;
+    let miny = 20037508.342789244 - (f64::from(y) + 1.0) * tile_size * res;
 
     GeometryExtent {
         minx,

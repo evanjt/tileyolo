@@ -5,7 +5,7 @@ use crate::{
 use comfy_table::{Attribute, Cell, CellAlignment, Table};
 use std::collections::HashMap;
 
-/// Style info: (layer_count, colour_stops, min_value, max_value, cog_count, rgb_count, non_rgb_count)
+/// Style info: (`layer_count`, `colour_stops`, `min_value`, `max_value`, `cog_count`, `rgb_count`, `non_rgb_count`)
 type StyleInfo = (usize, Vec<ColourStop>, f32, f32, usize, usize, usize);
 
 pub fn print_layer_summary(layers: &Vec<Layer>) {
@@ -24,7 +24,7 @@ pub fn print_layer_summary(layers: &Vec<Layer>) {
         entry.1 = layer.colour_stops.clone();
         entry.2 = entry.2.min(layer.min_value);
         entry.3 = entry.3.max(layer.max_value);
-        entry.4 += layer.is_cog as usize;
+        entry.4 += usize::from(layer.is_cog);
         // Track RGB vs non-RGB layers
         if layer.bands >= 3 {
             entry.5 += 1; // rgb_count
@@ -83,7 +83,7 @@ pub fn print_layer_summary(layers: &Vec<Layer>) {
             for i in 0..n {
                 let t = i as f32 / (n - 1) as f32;
                 let [r, g, b, _] = grad.at(t).to_rgba8();
-                s.push_str(&format!("\x1b[38;2;{};{};{}m█\x1b[0m", r, g, b));
+                s.push_str(&format!("\x1b[38;2;{r};{g};{b}m█\x1b[0m"));
             }
             s
         } else if stops.is_empty() {
@@ -92,7 +92,7 @@ pub fn print_layer_summary(layers: &Vec<Layer>) {
             let n = 10;
             for i in 0..n {
                 let v = (255.0 * i as f32 / (n - 1) as f32).round() as u8;
-                s.push_str(&format!("\x1b[38;2;{0};{0};{0}m█\x1b[0m", v));
+                s.push_str(&format!("\x1b[38;2;{v};{v};{v}m█\x1b[0m"));
             }
             s
         } else {
@@ -122,8 +122,7 @@ pub fn print_layer_summary(layers: &Vec<Layer>) {
             let style_max = stops.last().unwrap().value;
             if min_v < style_min || max_v > style_max {
                 warnings.push(format!(
-                    "  ⚠️{}: Colour stops [{:.2}…{:.2}] do NOT cover data range [{:.2}…{:.2}]",
-                    style_str, style_min, style_max, min_v, max_v
+                    "  ⚠️{style_str}: Colour stops [{style_min:.2}…{style_max:.2}] do NOT cover data range [{min_v:.2}…{max_v:.2}]"
                 ));
                 style_row[0] = Cell::new("⚠️");
             }
@@ -131,8 +130,7 @@ pub fn print_layer_summary(layers: &Vec<Layer>) {
 
         if num_cogs < count {
             warnings.push(format!(
-                "  ⚠️{}: {} of {} layers are COGs, performance will be degraded on large datasets",
-                style_str, num_cogs, count
+                "  ⚠️{style_str}: {num_cogs} of {count} layers are COGs, performance will be degraded on large datasets"
             ));
             style_row[0] = Cell::new("⚠️");
             cog_error_count += 1;
@@ -141,8 +139,7 @@ pub fn print_layer_summary(layers: &Vec<Layer>) {
         // Warn about non-RGB images in RGB folder (will fall back to grayscale)
         if is_rgb_folder && non_rgb_count > 0 {
             warnings.push(format!(
-                "  ⚠️{}: {} of {} layers are single-band (will render as grayscale instead of RGB)",
-                style_str, non_rgb_count, count
+                "  ⚠️{style_str}: {non_rgb_count} of {count} layers are single-band (will render as grayscale instead of RGB)"
             ));
             style_row[0] = Cell::new("⚠️");
         }
@@ -150,12 +147,12 @@ pub fn print_layer_summary(layers: &Vec<Layer>) {
         table.add_row(style_row);
     }
 
-    println!("\nStyle summary:\n{}", table);
+    println!("\nStyle summary:\n{table}");
 
     if !warnings.is_empty() {
         println!("\nWarnings:");
         for warning in warnings {
-            println!("{}", warning);
+            println!("{warning}");
         }
     }
 

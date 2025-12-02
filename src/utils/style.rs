@@ -5,7 +5,7 @@ use std::path::Path;
 
 pub fn parse_style_file<P: AsRef<Path>>(path: P) -> Result<Vec<ColourStop>, String> {
     let content =
-        fs::read_to_string(path).map_err(|e| format!("Failed to read style.txt: {}", e))?;
+        fs::read_to_string(path).map_err(|e| format!("Failed to read style.txt: {e}"))?;
     let mut stops = Vec::new();
 
     for line in content.lines() {
@@ -19,19 +19,19 @@ pub fn parse_style_file<P: AsRef<Path>>(path: P) -> Result<Vec<ColourStop>, Stri
 
         let value = parts[0]
             .parse()
-            .map_err(|e| format!("Invalid value: {}", e))?;
+            .map_err(|e| format!("Invalid value: {e}"))?;
         let red = parts[1]
             .parse()
-            .map_err(|e| format!("Invalid red: {}", e))?;
+            .map_err(|e| format!("Invalid red: {e}"))?;
         let green = parts[2]
             .parse()
-            .map_err(|e| format!("Invalid green: {}", e))?;
+            .map_err(|e| format!("Invalid green: {e}"))?;
         let blue = parts[3]
             .parse()
-            .map_err(|e| format!("Invalid blue: {}", e))?;
+            .map_err(|e| format!("Invalid blue: {e}"))?;
         let alpha = parts[4]
             .parse()
-            .map_err(|e| format!("Invalid alpha: {}", e))?;
+            .map_err(|e| format!("Invalid alpha: {e}"))?;
 
         stops.push(ColourStop {
             value,
@@ -153,7 +153,7 @@ mod tests {
     fn test_parse_style_file_skips_invalid_lines() {
         let mut file = NamedTempFile::new().unwrap();
         writeln!(file, "# Comment").unwrap();
-        writeln!(file, "").unwrap();  // Empty line
+        writeln!(file).unwrap();  // Empty line
         writeln!(file, "not,enough,columns").unwrap();  // Invalid line
         writeln!(file, "50,128,128,128,200").unwrap();  // Valid line
         file.flush().unwrap();

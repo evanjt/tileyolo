@@ -1,6 +1,6 @@
-//! Router builder for embedding TileYolo into existing axum applications.
+//! Router builder for embedding `TileYolo` into existing axum applications.
 //!
-//! This module provides flexible options for integrating TileYolo routes
+//! This module provides flexible options for integrating `TileYolo` routes
 //! into any axum application.
 //!
 //! # Quick Start
@@ -51,7 +51,7 @@ use axum::{routing::get, Router};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-/// Builder for creating TileYolo routes that can be embedded in existing axum applications.
+/// Builder for creating `TileYolo` routes that can be embedded in existing axum applications.
 ///
 /// Provides both convenience methods for common setups and granular methods
 /// for full control over route paths.
@@ -87,9 +87,9 @@ pub struct TileYoloRouter {
 }
 
 impl TileYoloRouter {
-    /// Create a TileYolo router from a local directory path.
+    /// Create a `TileYolo` router from a local directory path.
     ///
-    /// The directory should contain GeoTIFF files organized by style folders.
+    /// The directory should contain `GeoTIFF` files organized by style folders.
     /// This method performs async initialization (scanning files, loading metadata).
     ///
     /// # Example
@@ -115,7 +115,7 @@ impl TileYoloRouter {
         Ok(Self { reader })
     }
 
-    /// Create a TileYolo router from a configured source.
+    /// Create a `TileYolo` router from a configured source.
     ///
     /// This allows for more advanced configuration including S3 backends (when implemented).
     ///
@@ -138,17 +138,17 @@ impl TileYoloRouter {
         Ok(Self { reader })
     }
 
-    /// Create a TileYolo router from a custom TileReader implementation.
+    /// Create a `TileYolo` router from a custom `TileReader` implementation.
     ///
     /// This allows you to provide your own data source implementation.
     pub fn from_reader(reader: Arc<dyn TileReader>) -> Self {
         Self { reader }
     }
 
-    /// Get a reference to the underlying TileReader.
+    /// Get a reference to the underlying `TileReader`.
     ///
     /// Useful for querying layer information before starting the server.
-    pub fn reader(&self) -> &Arc<dyn TileReader> {
+    #[must_use] pub fn reader(&self) -> &Arc<dyn TileReader> {
         &self.reader
     }
 
