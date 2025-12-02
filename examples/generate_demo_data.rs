@@ -183,12 +183,11 @@ async fn main() {
     println!("Press Ctrl+C to stop the server and clean up demo data.\n");
 
     // Use the library to start the server
-    let config = tileyolo::Config {
-        source: Some(tileyolo::Source::Local(base_path)),
-        data_folder: "data/demo".to_string(),
-        port: 8080,
-        ..Default::default()
-    };
+    let config = tileyolo::Config::builder()
+        .source(tileyolo::Source::Local(base_path))
+        .port(8080)
+        .build()
+        .expect("valid config");
 
     let server = match tileyolo::TileServer::new(config).await {
         Ok(s) => s,
