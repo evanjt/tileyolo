@@ -1,3 +1,6 @@
+use crate::constants::{
+    FAILURE_CACHE_DURATION_SECS, MAX_CACHED_COG_READERS, MAX_CACHED_SOURCES,
+};
 use crate::models::geometry::GeometryExtent;
 use crate::models::layer::Layer;
 use crate::reader::cog_reader::CogReader;
@@ -7,7 +10,7 @@ use crate::reader::tiff_chunked::TiffChunkedRasterSource;
 use crate::reader::tiff_utils::{AnyResult, read_primary_compression};
 use crate::utils::style::{get_builtin_gradient, is_rgb_style};
 use geo::{AffineTransform, Coord};
-use image::{ColorType, ImageEncoder, Rgba, RgbaImage, codecs::png::PngEncoder};
+use image::{codecs::png::PngEncoder, ColorType, ImageEncoder, Rgba, RgbaImage};
 use lru::LruCache;
 use ndarray::Array3;
 use std::collections::HashMap;
@@ -16,36 +19,33 @@ use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::task;
-use tracing::{debug, warn, error, info};
+use tracing::{debug, error, info, warn};
 
-// Global LRU cache for loaded GeoTIFF sources - bounded to prevent memory bloat
 type CachedSource = Arc<dyn RasterSource>;
-const MAX_CACHED_SOURCES: usize = 50;
 
-// Cache for CogReader instances (efficient windowed reading)
-const MAX_CACHED_COG_READERS: usize = 50;
 static COG_READER_CACHE: std::sync::LazyLock<std::sync::Mutex<LruCache<String, Arc<CogReader>>>> =
-    std::sync::LazyLock::new(|| std::sync::Mutex::new(LruCache::new(NonZeroUsize::new(MAX_CACHED_COG_READERS).unwrap())));
+    std::sync::LazyLock::new(|| {
+        std::sync::Mutex::new(LruCache::new(NonZeroUsize::new(MAX_CACHED_COG_READERS).unwrap()))
+    });
 
-static SOURCE_CACHE: std::sync::LazyLock<std::sync::Mutex<LruCache<String, (CachedSource, AffineTransform<f64>)>>> =
-    std::sync::LazyLock::new(|| std::sync::Mutex::new(LruCache::new(NonZeroUsize::new(MAX_CACHED_SOURCES).unwrap())));
+static SOURCE_CACHE: std::sync::LazyLock<
+    std::sync::Mutex<LruCache<String, (CachedSource, AffineTransform<f64>)>>,
+> = std::sync::LazyLock::new(|| {
+    std::sync::Mutex::new(LruCache::new(NonZeroUsize::new(MAX_CACHED_SOURCES).unwrap()))
+});
 
-// Use a better synchronization approach with Arc<Mutex<Option<...>>> for proper waiting
 static LOADING_FILES: std::sync::LazyLock<
     std::sync::Mutex<
-        HashMap<
-            String,
-            std::sync::Arc<std::sync::Mutex<Option<(CachedSource, AffineTransform<f64>)>>>,
-        >,
+        HashMap<String, std::sync::Arc<std::sync::Mutex<Option<(CachedSource, AffineTransform<f64>)>>>>,
     >,
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
 
-// Cache for files that have failed to load - with reduced persistence for retry attempts
-static FAILED_FILES: std::sync::LazyLock<std::sync::Mutex<HashMap<String, (String, std::time::Instant)>>> =
-    std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+static FAILED_FILES: std::sync::LazyLock<
+    std::sync::Mutex<HashMap<String, (String, std::time::Instant)>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
 
-// Only keep failures in cache for 5 minutes to allow retry
-const FAILURE_CACHE_DURATION: std::time::Duration = std::time::Duration::from_secs(300);
+const FAILURE_CACHE_DURATION: std::time::Duration =
+    std::time::Duration::from_secs(FAILURE_CACHE_DURATION_SECS);
 
 // Returns true if the value should be treated as nodata (currently, if it is NaN)
 fn is_nodata(val: f32) -> bool {

@@ -1,4 +1,5 @@
 use crate::{
+    constants::WEB_MERCATOR_EXTENT,
     error::TileYoloError,
     models::{
         geometry::GeometryExtent,
@@ -8,7 +9,7 @@ use crate::{
     reader::{
         cog::process_cog,
         cog_reader::CogReader,
-        metadata::{LayerMetadata, MetadataCache, key_for, load_cache, save_cache},
+        metadata::{key_for, load_cache, save_cache, LayerMetadata, MetadataCache},
     },
     traits::TileReader,
     utils::{status::print_layer_summary, style::is_builtin_palette},
@@ -275,7 +276,7 @@ impl LocalTileReader {
         } else {
             // Fallback to Web Mercator world extent if no geotags
             warn!(path = %path.display(), "No geotags found, using Web Mercator world extent");
-            let web_mercator_extent = 20037508.342789244;
+            let web_mercator_extent = WEB_MERCATOR_EXTENT;
             GeometryExtent {
                 minx: -web_mercator_extent,
                 miny: -web_mercator_extent,
@@ -409,12 +410,12 @@ impl TileReader for LocalTileReader {
 
 fn tile_bounds_to_3857(z: u8, x: u32, y: u32) -> GeometryExtent {
     let tile_size = 256.0;
-    let initial_resolution = 2.0 * 20037508.342789244 / tile_size;
+    let initial_resolution = 2.0 * WEB_MERCATOR_EXTENT / tile_size;
     let res = initial_resolution / (2f64.powi(i32::from(z)));
-    let minx = f64::from(x) * tile_size * res - 20037508.342789244;
-    let maxx = (f64::from(x) + 1.0) * tile_size * res - 20037508.342789244;
-    let maxy = 20037508.342789244 - f64::from(y) * tile_size * res;
-    let miny = 20037508.342789244 - (f64::from(y) + 1.0) * tile_size * res;
+    let minx = f64::from(x) * tile_size * res - WEB_MERCATOR_EXTENT;
+    let maxx = (f64::from(x) + 1.0) * tile_size * res - WEB_MERCATOR_EXTENT;
+    let maxy = WEB_MERCATOR_EXTENT - f64::from(y) * tile_size * res;
+    let miny = WEB_MERCATOR_EXTENT - (f64::from(y) + 1.0) * tile_size * res;
 
     GeometryExtent {
         minx,
@@ -428,8 +429,8 @@ fn tile_bounds_to_3857(z: u8, x: u32, y: u32) -> GeometryExtent {
 mod tests {
     use super::*;
 
-    /// Web Mercator bounds constant (half the world in meters)
-    const HALF_WORLD: f64 = 20037508.342789244;
+    use crate::constants::WEB_MERCATOR_EXTENT;
+    const HALF_WORLD: f64 = WEB_MERCATOR_EXTENT;
 
     #[test]
     fn test_tile_bounds_zoom_0() {
