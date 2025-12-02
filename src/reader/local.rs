@@ -1,4 +1,5 @@
 use crate::{
+    error::TileYoloError,
     models::{
         geometry::GeometryExtent,
         layer::{Layer, LayerGeometry},
@@ -357,14 +358,16 @@ impl TileReader for LocalTileReader {
         x: u32,
         y: u32,
         style: Option<&str>,
-    ) -> anyhow::Result<TileResponse, String> {
+    ) -> Result<TileResponse, TileYoloError> {
         let tile_size = (256, 256);
 
         let base_layer = self
             .layers
             .get(layer)
             .and_then(|styles| styles.first())
-            .ok_or_else(|| format!("Layer not found: '{layer}'"))?;
+            .ok_or_else(|| TileYoloError::LayerNotFound {
+                name: layer.to_string(),
+            })?;
 
         // If a style override is requested, create a modified layer with the new style
         let layer_obj = if let Some(style_name) = style {
@@ -385,23 +388,17 @@ impl TileReader for LocalTileReader {
         // OPTIMIZATION: Early rejection if tile doesn't intersect layer extent
         // This avoids loading COG data for tiles that are completely outside the layer
         if let Some(layer_extent_3857) = layer_obj.cached_geometry.get(&3857)
-            && !layer_extent_3857.extent.intersects(&tile_extent) {
-                // Return pre-cached transparent tile without any processing
-                return Ok(TileResponse {
-                    content_type: "image/png".into(),
-                    bytes: TRANSPARENT_TILE.clone(),
-                });
-            }
+            && !layer_extent_3857.extent.intersects(&tile_extent)
+        {
+            return Ok(TileResponse {
+                content_type: "image/png".into(),
+                bytes: TRANSPARENT_TILE.clone(),
+            });
+        }
 
-        // Process the tile
-        let png_data = process_cog(
-            layer_obj.path.clone(),
-            tile_extent,
-            layer_obj,
-            tile_size,
-        )
-        .await
-        .map_err(|e| e.to_string())?;
+        let png_data = process_cog(layer_obj.path.clone(), tile_extent, layer_obj, tile_size)
+            .await
+            .map_err(|e| TileYoloError::RasterProcessing(e.to_string()))?;
 
         Ok(TileResponse {
             content_type: "image/png".into(),

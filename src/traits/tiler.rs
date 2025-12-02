@@ -1,3 +1,4 @@
+use crate::error::TileYoloError;
 use crate::models::{layer::Layer, responses::TileResponse};
 use async_trait::async_trait;
 
@@ -11,5 +12,5 @@ pub trait TileReader: Send + Sync {
         x: u32,
         y: u32,
         style: Option<&str>,
-    ) -> Result<TileResponse, String>;
+    ) -> Result<TileResponse, TileYoloError>;
 }

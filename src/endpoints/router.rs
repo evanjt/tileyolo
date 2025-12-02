@@ -45,6 +45,7 @@
 
 use crate::config::Source;
 use crate::endpoints::handlers::{get_all_layers, tile_handler, webmap_handler};
+use crate::error::TileYoloError;
 use crate::reader::local::LocalTileReader;
 use crate::traits::TileReader;
 use axum::{routing::get, Router};
@@ -130,10 +131,18 @@ impl TileYoloRouter {
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn from_source(source: Source) -> anyhow::Result<Self> {
+    ///
+    /// # Errors
+    ///
+    /// Returns `TileYoloError::Unsupported` if attempting to use an unimplemented backend.
+    pub async fn from_source(source: Source) -> Result<Self, TileYoloError> {
         let reader: Arc<dyn TileReader> = match source {
             Source::Local(path) => Arc::new(LocalTileReader::new(&path).await),
-            Source::S3 { .. } => anyhow::bail!("S3 backend is not yet implemented"),
+            Source::S3 { bucket, prefix } => {
+                return Err(TileYoloError::Unsupported(format!(
+                    "S3 backend not yet implemented (bucket: {bucket}, prefix: {prefix})"
+                )));
+            }
         };
         Ok(Self { reader })
     }

@@ -1,4 +1,5 @@
 use crate::endpoints::map::INDEX_HTML;
+use crate::error::TileYoloError;
 use crate::models::layer::{Layer, LayerGeometry};
 use crate::traits::TileReader;
 use axum::{
@@ -9,14 +10,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-
-#[derive(Serialize, Deserialize)]
-pub struct TileRequest {
-    layer: String,
-    z: u8,
-    x: u32,
-    y: u32,
-}
+use tracing::error;
 
 #[derive(Deserialize, Default)]
 pub struct TileQuery {
@@ -34,8 +28,36 @@ pub async fn tile_handler(
 ) -> impl IntoResponse {
     match reader.get_tile(&layer, z, x, y, query.style.as_deref()).await {
         Ok(tile_data) => tile_data.into_response(),
-        Err(e) => {
-            eprintln!("Error generating tile: {e:?}");
+        Err(e) => map_error_to_response(e),
+    }
+}
+
+fn map_error_to_response(err: TileYoloError) -> axum::response::Response {
+    match &err {
+        TileYoloError::LayerNotFound { name } => {
+            error!(layer = %name, "Layer not found");
+            (StatusCode::NOT_FOUND, format!("Layer not found: {name}")).into_response()
+        }
+        TileYoloError::InvalidTile { z, x, y } => {
+            (
+                StatusCode::BAD_REQUEST,
+                format!("Invalid tile coordinates: z={z}, x={x}, y={y}"),
+            )
+                .into_response()
+        }
+        TileYoloError::TileOutOfBounds => {
+            (StatusCode::NO_CONTENT, "Tile outside layer bounds").into_response()
+        }
+        TileYoloError::Config(msg) => {
+            error!(error = %msg, "Configuration error");
+            (StatusCode::INTERNAL_SERVER_ERROR, "Configuration error").into_response()
+        }
+        TileYoloError::Unsupported(msg) => {
+            error!(error = %msg, "Unsupported feature");
+            (StatusCode::NOT_IMPLEMENTED, format!("Not supported: {msg}")).into_response()
+        }
+        _ => {
+            error!(error = %err, "Tile generation error");
             (StatusCode::INTERNAL_SERVER_ERROR, "Error generating tile").into_response()
         }
     }
@@ -79,6 +101,3 @@ pub async fn get_all_layers(State(reader): State<Arc<dyn TileReader>>) -> impl I
 
     (StatusCode::OK, Json(all_layers))
 }
-
-// Test code temporarily disabled due to GDAL dependency
-// TODO: Update to use cog3pio instead of GDAL

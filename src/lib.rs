@@ -1,4 +1,5 @@
 mod config;
+mod error;
 mod geometry;
 mod models;
 mod traits;
@@ -31,3 +32,4 @@ mod gdal_validation_tests;
 pub use config::{Config, Source};
 pub use endpoints::router::TileYoloRouter;
 pub use endpoints::server::TileServer;
+pub use error::TileYoloError;

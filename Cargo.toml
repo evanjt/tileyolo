@@ -47,6 +47,7 @@ tiny_tiff = "0.5.2"
 tiff = { version = "0.10.3", features = ["lzw", "deflate"], default-features = false }
 lru = "0.12"
 reqwest = { version = "0.12", features = ["blocking"] }
+thiserror = "2.0"
 tracing = "0.1"
 flate2 = "1.0"
 zstd = "0.13"

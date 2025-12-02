@@ -21,7 +21,7 @@
 //! use tileyolo::reader::s3::S3RangeReaderAsync;
 //!
 //! #[tokio::main]
-//! async fn main() -> anyhow::Result<()> {
+//! async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 //!     // For AWS S3
 //!     let reader = S3RangeReaderAsync::new("s3://my-bucket/path/to/file.tif").await?;
 //!
@@ -133,7 +133,7 @@ impl S3RangeReaderAsync {
     /// ```rust,no_run
     /// use tileyolo::reader::s3::S3RangeReaderAsync;
     ///
-    /// # async fn example() -> anyhow::Result<()> {
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     /// let reader = S3RangeReaderAsync::new("s3://my-bucket/data/file.tif").await?;
     /// println!("File size: {} bytes", reader.size());
     /// # Ok(())
