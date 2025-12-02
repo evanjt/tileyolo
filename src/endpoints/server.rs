@@ -1,12 +1,15 @@
+//! Standalone tile server implementation.
+
 use crate::config::{Config, Source};
 use crate::endpoints::handlers::{get_all_layers, tile_handler, webmap_handler};
 use crate::error::TileYoloError;
 use crate::reader::local::LocalTileReader;
 use crate::traits::TileReader;
-use axum::{Router, routing::get};
+use axum::{routing::get, Router};
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+/// Create an axum Router with all tile server endpoints.
 pub fn create_router(reader: Arc<dyn TileReader>) -> Router {
     Router::new()
         .route("/tiles/{layer}/{z}/{x}/{y}", get(tile_handler))
@@ -15,12 +18,43 @@ pub fn create_router(reader: Arc<dyn TileReader>) -> Router {
         .with_state(reader)
 }
 
+/// Standalone XYZ tile server.
+///
+/// Use this for running TileYolo as a complete HTTP server.
+/// For embedding into existing applications, see [`TileYoloRouter`](crate::TileYoloRouter).
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use tileyolo::{Config, Source, TileServer};
+/// use std::path::PathBuf;
+///
+/// #[tokio::main]
+/// async fn main() -> anyhow::Result<()> {
+///     let config = Config::builder()
+///         .source(Source::Local(PathBuf::from("./data")))
+///         .port(8080)
+///         .build()?;
+///
+///     TileServer::new(config).await?.start().await
+/// }
+/// ```
 pub struct TileServer {
     config: Config,
     reader: Arc<dyn TileReader>,
 }
 
 impl TileServer {
+    /// Create a new tile server from the given configuration.
+    ///
+    /// This initializes the data source and loads layer metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - No source is configured
+    /// - The source type is not implemented (e.g., S3)
+    /// - The data source cannot be accessed
     pub async fn new(config: Config) -> Result<Self, TileYoloError> {
         let reader: Arc<dyn TileReader> = match &config.source {
             Some(Source::Local(path)) => Arc::new(LocalTileReader::new(path).await),
@@ -39,6 +73,13 @@ impl TileServer {
         Ok(Self { config, reader })
     }
 
+    /// Start the HTTP server and begin serving tiles.
+    ///
+    /// This method blocks until the server is shut down.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the server cannot bind to the configured port.
     pub async fn start(self) -> anyhow::Result<()> {
         let app = create_router(self.reader.clone());
 
