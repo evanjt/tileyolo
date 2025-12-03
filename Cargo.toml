@@ -21,7 +21,7 @@ path = "src/main.rs"
 anyhow = "1.0.98"
 async-trait = "0.1.88"
 axum = { version = "0.8.3", features = ["macros"] }
-cog3pio = { path = "../cog/cog3pio" }
+cog3pio = { git = "https://github.com/weiji14/cog3pio", rev = "9db1590" }
 geo = "0.29.0"
 image = "0.25.6"
 tokio = { version = "1.44.2", features = ["full"] }
@@ -52,13 +52,9 @@ tracing = "0.1"
 flate2 = "1.0"
 zstd = "0.13"
 futures = "0.3"
-# GDAL is optional - only used for validation tests
-gdal = { version = "0.18", features = ["bindgen"], optional = true }
 
 [features]
 default = []
-# Enable GDAL validation tests (requires GDAL to be installed)
-gdal-tests = ["gdal"]
 # Enable S3 integration tests (requires S3-compatible server)
 s3-tests = []
 
@@ -68,3 +64,5 @@ tempfile = "3.19.1"
 tower = "0.5.2"
 noise = "0.9"
 rayon = "1.10"
+# GDAL is only for validation tests, requires system GDAL (3.12+ needs git version until next release)
+gdal = { git = "https://github.com/georust/gdal", features = ["bindgen"] }

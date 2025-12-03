@@ -67,7 +67,7 @@ impl RasterReadResult {
         }
     }
 
-    fn geo_tags(&self) -> (Option<[f64; 3]>, Option<[f64; 6]>) {
+    pub fn geo_tags(&self) -> (Option<[f64; 3]>, Option<[f64; 6]>) {
         match self {
             RasterReadResult::Array(_) => (None, None),
             RasterReadResult::Chunked(source) => (source.pixel_scale(), source.tiepoint()),
@@ -131,6 +131,28 @@ impl RasterReadResult {
             }
             RasterReadResult::Chunked(source) => source.compute_min_max(),
             RasterReadResult::Lzw(source) => source.compute_min_max(),
+        }
+    }
+
+    /// Sample a pixel value at the given band, x, y coordinates
+    #[cfg(test)]
+    pub fn sample(&self, band: usize, x: usize, y: usize) -> Option<f32> {
+        use crate::reader::raster::RasterSource;
+        match self {
+            RasterReadResult::Array(array) => {
+                let (bands, height, width) = array.dim();
+                if band >= bands || y >= height || x >= width {
+                    return None;
+                }
+                let val = array[[band, y, x]];
+                if val.is_nan() {
+                    None
+                } else {
+                    Some(val)
+                }
+            }
+            RasterReadResult::Chunked(source) => source.sample(band, x, y),
+            RasterReadResult::Lzw(source) => source.sample(band, x, y),
         }
     }
 }

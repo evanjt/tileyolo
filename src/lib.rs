@@ -89,7 +89,7 @@ mod test_lzw_mod;
 #[cfg(test)]
 mod simple_test;
 
-#[cfg(all(test, feature = "gdal-tests"))]
+#[cfg(test)]
 mod gdal_validation_tests;
 
 pub use config::{Config, ConfigBuilder, Source};

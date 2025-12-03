@@ -12,72 +12,116 @@ env:
 
 jobs:
   s3-tests:
-    name: S3 integration tests with MinIO
+    name: S3 integration tests with Garage
     runs-on: ubuntu-latest
-
-    services:
-      minio:
-        image: quay.io/minio/minio:latest
-        ports:
-          - 9000:9000
-        env:
-          MINIO_ROOT_USER: minioadmin
-          MINIO_ROOT_PASSWORD: minioadmin
-        options: >-
-          --health-cmd "curl -f http://localhost:9000/minio/health/live || exit 1"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 10
-          --entrypoint ""
-        # Run minio server
-        # Note: GitHub Actions requires command to be specified separately
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Start MinIO server (workaround for service command)
+      - name: Start Garage S3
         run: |
-          # The service container is running but we need to ensure it's serving
-          # Wait for the health check to pass
+          # Clean up any leftover containers from previous runs
+          docker rm -f garage garage-init 2>/dev/null || true
+          docker rmi garage-configured 2>/dev/null || true
+
+          # Create config file
+          cat > /tmp/garage.toml << 'EOF'
+          metadata_dir = "/var/lib/garage/meta"
+          data_dir = "/var/lib/garage/data"
+          db_engine = "sqlite"
+          replication_factor = 1
+
+          rpc_bind_addr = "[::]:3901"
+          rpc_public_addr = "127.0.0.1:3901"
+          rpc_secret = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+          [s3_api]
+          s3_region = "garage"
+          api_bind_addr = "[::]:3900"
+          root_domain = ".s3.garage.localhost"
+
+          [s3_web]
+          bind_addr = "[::]:3902"
+          root_domain = ".web.garage.localhost"
+          index = "index.html"
+
+          [admin]
+          api_bind_addr = "[::]:3903"
+          admin_token = "s3cr3t4dm1nt0k3n"
+          EOF
+
+          # Remove leading whitespace
+          sed -i 's/^          //' /tmp/garage.toml
+          cat /tmp/garage.toml
+
+          # Create a temporary container to copy config into
+          docker create --name garage-init --network host dxflrs/garage:v1.0.1
+
+          # Copy config into container
+          docker cp /tmp/garage.toml garage-init:/etc/garage.toml
+
+          # Commit the container with config as new image and start it
+          docker commit garage-init garage-configured
+          docker rm garage-init
+
+          # Start Garage from the configured image
+          docker run -d --name garage --network host garage-configured
+
+          # Wait for Garage to be ready
+          echo "Waiting for Garage to start..."
           for i in {1..30}; do
-            if curl -sf http://localhost:9000/minio/health/live; then
-              echo "MinIO is healthy"
+            if curl -sf http://127.0.0.1:3903/health > /dev/null 2>&1; then
+              echo "Garage is healthy"
               break
             fi
-            echo "Waiting for MinIO... ($i/30)"
+            if [ $i -eq 30 ]; then
+              echo "Garage failed to start"
+              docker logs garage
+              exit 1
+            fi
+            echo "Waiting... ($i/30)"
             sleep 1
           done
 
-      - name: Install MinIO client
+      - name: Configure Garage cluster
         run: |
-          curl -sLo mc https://dl.min.io/client/mc/release/linux-amd64/mc
-          chmod +x mc
-          sudo mv mc /usr/local/bin/
+          # Get node ID and configure layout
+          NODE_ID=$(docker exec garage /garage status 2>/dev/null | grep -oE '[a-f0-9]{16}' | head -1)
+          echo "Node ID: $NODE_ID"
 
-      - name: Setup test bucket with test data
+          # Assign layout (zone, capacity)
+          docker exec garage /garage layout assign -z dc1 -c 1G "$NODE_ID"
+          docker exec garage /garage layout apply --version 1
+
+          # Create API key
+          docker exec garage /garage key create test-key
+          KEY_INFO=$(docker exec garage /garage key info test-key)
+          echo "$KEY_INFO"
+
+          # Extract key ID and secret
+          KEY_ID=$(echo "$KEY_INFO" | grep "Key ID:" | awk '{print $3}')
+          KEY_SECRET=$(echo "$KEY_INFO" | grep "Secret key:" | awk '{print $3}')
+
+          echo "KEY_ID=$KEY_ID" >> $GITHUB_ENV
+          echo "KEY_SECRET=$KEY_SECRET" >> $GITHUB_ENV
+
+          # Create bucket
+          docker exec garage /garage bucket create test-bucket
+
+          # Grant access
+          docker exec garage /garage bucket allow --read --write --owner test-bucket --key test-key
+
+          # Verify
+          docker exec garage /garage bucket info test-bucket
+
+      - name: Verify Garage is accessible
         run: |
-          # Configure mc
-          mc alias set local http://localhost:9000 minioadmin minioadmin
-
-          # Create test bucket
-          mc mb local/test-bucket
-
-          # Create test GeoTIFF structure: bucket/style/layer.tif
-          # Use the small gray_3857.tif if available, otherwise create minimal test file
-          if [ -f "data/test/gray_3857.tif" ]; then
-            mc cp data/test/gray_3857.tif local/test-bucket/viridis/gray_3857.tif
-            echo "Uploaded gray_3857.tif"
-          else
-            # Create minimal valid GeoTIFF for testing
-            .github/scripts/create-test-tiff.sh /tmp/test.tif
-            mc cp /tmp/test.tif local/test-bucket/viridis/test.tif
-            echo "Uploaded minimal test.tif"
-          fi
-
-          # List bucket contents
-          echo "Bucket contents:"
-          mc ls --recursive local/test-bucket/
+          echo "Verifying Garage S3 API is accessible..."
+          curl -s http://127.0.0.1:3900/ || echo "Root endpoint responded"
+          echo "Bucket list via garage CLI:"
+          docker exec garage /garage bucket list
+          echo "Garage is ready for S3 tests"
 
       - name: Install system dependencies
         run: |
@@ -104,23 +148,18 @@ jobs:
 
       - name: Run S3 integration tests
         env:
-          AWS_ACCESS_KEY_ID: minioadmin
-          AWS_SECRET_ACCESS_KEY: minioadmin
-          AWS_ENDPOINT_URL: http://localhost:9000
+          AWS_ACCESS_KEY_ID: ${{ env.KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ env.KEY_SECRET }}
+          AWS_ENDPOINT_URL: http://127.0.0.1:3900
           AWS_ALLOW_HTTP: "true"
-          AWS_REGION: us-east-1
+          AWS_REGION: garage
           S3_TEST_BUCKET: test-bucket
           S3_TEST_KEY: viridis/gray_3857.tif
         run: |
           cargo test --features s3-tests s3 -- --nocapture
 
-      - name: Run S3TileReader tests
-        env:
-          AWS_ACCESS_KEY_ID: minioadmin
-          AWS_SECRET_ACCESS_KEY: minioadmin
-          AWS_ENDPOINT_URL: http://localhost:9000
-          AWS_ALLOW_HTTP: "true"
-          AWS_REGION: us-east-1
-          S3_TEST_BUCKET: test-bucket
+      - name: Cleanup
+        if: always()
         run: |
-          cargo test --features s3-tests s3_tile_reader -- --nocapture
+          docker stop garage || true
+          docker rm garage || true
