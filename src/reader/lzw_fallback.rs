@@ -2,13 +2,13 @@
 
 use crate::reader::raster::RasterSource;
 use crate::reader::tiff_utils::{
-    AnyResult, TAG_BITS_PER_SAMPLE, TAG_COMPRESSION, TAG_GDAL_METADATA, TAG_IMAGE_LENGTH,
-    TAG_IMAGE_WIDTH, TAG_MODEL_PIXEL_SCALE, TAG_MODEL_TIEPOINT, TAG_PLANAR_CONFIGURATION,
-    TAG_PREDICTOR, TAG_ROWS_PER_STRIP, TAG_SAMPLE_FORMAT, TAG_SAMPLES_PER_PIXEL,
-    TAG_STRIP_BYTE_COUNTS, TAG_STRIP_OFFSETS, TAG_TILE_BYTE_COUNTS, TAG_TILE_LENGTH,
-    TAG_TILE_OFFSETS, TAG_TILE_WIDTH, parse_gdal_metadata_stats, read_ifd, read_tag_f64_six,
-    read_tag_f64_triplet, read_tag_string_from_ifd, read_tag_u32, read_tag_u32_vec,
-    read_tag_u32_vec_optional, read_tiff_header,
+    AnyResult, TAG_BITS_PER_SAMPLE, TAG_COMPRESSION, TAG_GDAL_METADATA, TAG_GDAL_NODATA,
+    TAG_IMAGE_LENGTH, TAG_IMAGE_WIDTH, TAG_MODEL_PIXEL_SCALE, TAG_MODEL_TIEPOINT,
+    TAG_PLANAR_CONFIGURATION, TAG_PREDICTOR, TAG_ROWS_PER_STRIP, TAG_SAMPLE_FORMAT,
+    TAG_SAMPLES_PER_PIXEL, TAG_STRIP_BYTE_COUNTS, TAG_STRIP_OFFSETS, TAG_TILE_BYTE_COUNTS,
+    TAG_TILE_LENGTH, TAG_TILE_OFFSETS, TAG_TILE_WIDTH, parse_gdal_metadata_stats, read_ifd,
+    read_tag_f64_six, read_tag_f64_triplet, read_tag_string_from_ifd, read_tag_u32,
+    read_tag_u32_vec, read_tag_u32_vec_optional, read_tiff_header,
 };
 use crate::reader::tile_cache::{self, TileKind};
 use std::fs::File;
@@ -33,6 +33,7 @@ pub struct LzwRasterSource {
     is_tiled: bool,
     model_pixel_scale: Option<[f64; 3]>,
     model_tiepoint: Option<[f64; 6]>,
+    nodata: Option<f64>,
     min_max: Mutex<Option<(f32, f32)>>,
 }
 
@@ -281,6 +282,16 @@ impl LzwRasterSource {
         .ok()
         .and_then(|s| parse_gdal_metadata_stats(&s));
 
+        // Read GDAL_NODATA tag (tag 42113) - stored as ASCII string
+        let nodata = read_tag_string_from_ifd(
+            &mut file,
+            &ifd_entries,
+            header.little_endian,
+            TAG_GDAL_NODATA,
+        )
+        .ok()
+        .and_then(|s| s.trim_end_matches('\0').trim().parse::<f64>().ok());
+
         Ok(Self {
             path: path.clone(),
             image_width,
@@ -297,6 +308,7 @@ impl LzwRasterSource {
             is_tiled,
             model_pixel_scale,
             model_tiepoint,
+            nodata,
             min_max: Mutex::new(metadata_stats),
         })
     }
@@ -316,12 +328,20 @@ impl LzwRasterSource {
 
         let mut min_value = f32::INFINITY;
         let mut max_value = f32::NEG_INFINITY;
+        let nodata_f32 = self.nodata.map(|v| v as f32);
 
         for tile_index in 0..self.offsets.len() {
             let tile_data = self.fetch_tile(tile_index)?;
             for &value in tile_data.iter() {
+                // Skip NaN values
                 if value.is_nan() {
                     continue;
+                }
+                // Skip NoData values
+                if let Some(nd) = nodata_f32 {
+                    if (value - nd).abs() < f32::EPSILON {
+                        continue;
+                    }
                 }
                 if value < min_value {
                     min_value = value;

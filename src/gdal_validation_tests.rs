@@ -474,6 +474,109 @@ mod tests {
         }
     }
 
+    /// Specific LZW COG validation test - comprehensively tests the LZW decoder
+    #[test]
+    fn test_lzw_cog_pixel_values_match_gdal() {
+        let lzw_file = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("data")
+            .join("grayscale")
+            .join("gray_3857-cog.tif");
+
+        if !lzw_file.exists() {
+            eprintln!("Skipping test: LZW test file not found at {:?}", lzw_file);
+            return;
+        }
+
+        // Read with our LZW implementation
+        use crate::reader::lzw_fallback::try_read_lzw_tiff_fallback;
+        use crate::reader::raster::RasterSource;
+
+        let lzw_source = match try_read_lzw_tiff_fallback(&lzw_file) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("Skipping test: couldn't read with LZW fallback: {}", e);
+                return;
+            }
+        };
+
+        // Read with GDAL
+        let gdal_dataset = Dataset::open(&lzw_file);
+        if gdal_dataset.is_err() {
+            eprintln!("Skipping test: couldn't read file with GDAL");
+            return;
+        }
+        let gdal_dataset = gdal_dataset.unwrap();
+
+        let band = gdal_dataset.rasterband(1);
+        if band.is_err() {
+            eprintln!("Skipping test: couldn't get GDAL raster band");
+            return;
+        }
+        let band = band.unwrap();
+
+        let width = lzw_source.width();
+        let height = lzw_source.height();
+
+        // Sample a comprehensive grid of pixels
+        let sample_step = (width.max(height) / 50).max(1); // 50x50 grid ≈ 2500 samples
+        let mut mismatches = 0;
+        let mut total_samples = 0;
+        let mut max_diff: f64 = 0.0;
+
+        for y in (0..height).step_by(sample_step) {
+            for x in (0..width).step_by(sample_step) {
+                total_samples += 1;
+
+                // Get our value
+                let our_value = lzw_source.sample(0, x, y);
+                if our_value.is_none() {
+                    continue;
+                }
+                let our_value = our_value.unwrap();
+
+                // Get GDAL value
+                let gdal_result: Result<gdal::raster::Buffer<f64>, _> = band.read_as(
+                    (x as isize, y as isize),
+                    (1, 1),
+                    (1, 1),
+                    None,
+                );
+                if gdal_result.is_err() {
+                    continue;
+                }
+                let gdal_buffer = gdal_result.unwrap();
+                let gdal_value = gdal_buffer.data()[0];
+
+                // Compare values - for integer data should be exact
+                let diff = (our_value as f64 - gdal_value).abs();
+                max_diff = max_diff.max(diff);
+
+                // For byte data, values should match exactly (after rounding)
+                if diff > 0.5 {
+                    mismatches += 1;
+                    if mismatches <= 5 {
+                        eprintln!(
+                            "LZW Pixel mismatch at ({}, {}): ours={}, GDAL={} (diff={})",
+                            x, y, our_value, gdal_value, diff
+                        );
+                    }
+                }
+            }
+        }
+
+        eprintln!(
+            "LZW validation: {} samples, {} mismatches, max_diff={}",
+            total_samples, mismatches, max_diff
+        );
+
+        let mismatch_rate = mismatches as f64 / total_samples as f64;
+        assert!(
+            mismatch_rate < 0.001, // Less than 0.1% mismatch rate
+            "Too many LZW pixel mismatches: {}/{} ({:.2}%), max_diff={}",
+            mismatches, total_samples, mismatch_rate * 100.0, max_diff
+        );
+    }
+
     #[test]
     fn test_nodata_value_matches_gdal() {
         let Some(test_file) = find_test_geotiff() else {

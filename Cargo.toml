@@ -17,6 +17,10 @@ path = "src/lib.rs"
 name = "tileyolo"
 path = "src/main.rs"
 
+[[bin]]
+name = "generate_test_cog"
+path = "src/bin/generate_test_cog.rs"
+
 [dependencies]
 anyhow = "1.0.98"
 async-trait = "0.1.88"

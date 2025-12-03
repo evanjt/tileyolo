@@ -92,6 +92,9 @@ mod simple_test;
 #[cfg(test)]
 mod gdal_validation_tests;
 
+// Test COG generator - available for tests and as a binary tool
+pub mod test_cog_generator;
+
 pub use config::{Config, ConfigBuilder, Source};
 pub use endpoints::router::TileYoloRouter;
 pub use endpoints::server::TileServer;

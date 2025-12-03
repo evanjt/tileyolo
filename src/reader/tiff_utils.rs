@@ -22,6 +22,7 @@ pub const TAG_SAMPLE_FORMAT: u16 = 339;
 pub const TAG_MODEL_PIXEL_SCALE: u16 = 33550;
 pub const TAG_MODEL_TIEPOINT: u16 = 33922;
 pub const TAG_GDAL_METADATA: u16 = 42112;
+pub const TAG_GDAL_NODATA: u16 = 42113;
 
 #[derive(Debug)]
 pub struct TiffHeader {

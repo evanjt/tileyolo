@@ -1,0 +1,55 @@
+# S3 Integration Tests
+# Usage: docker compose up
+
+services:
+  minio:
+    image: minio/minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9100:9000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 2s
+      timeout: 5s
+      retries: 5
+
+  test:
+    build:
+      context: docker
+      dockerfile: Dockerfile.test
+    working_dir: /app
+    volumes:
+      - .:/app
+      - cargo-cache:/usr/local/cargo/registry
+      - target-cache:/app/target
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      AWS_ENDPOINT_URL: http://minio:9000
+      AWS_ALLOW_HTTP: "true"
+      AWS_REGION: us-east-1
+      S3_TEST_BUCKET: test-bucket
+      S3_TEST_KEY: viridis/test.tif
+    command: |
+      bash -c "
+        set -e
+        mc alias set local http://minio:9000 minioadmin minioadmin
+        mc mb local/test-bucket --ignore-existing
+
+        cargo build --bin generate_test_cog --release
+        ./target/release/generate_test_cog /tmp/test.tif --size 512 --pattern position
+        mc cp /tmp/test.tif local/test-bucket/viridis/test.tif
+        mc ls local/test-bucket/viridis/
+
+        cargo test --features s3-tests s3 -- --nocapture
+      "
+
+volumes:
+  cargo-cache:
+  target-cache:
