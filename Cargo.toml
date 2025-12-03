@@ -64,5 +64,6 @@ tempfile = "3.19.1"
 tower = "0.5.2"
 noise = "0.9"
 rayon = "1.10"
-# GDAL is only for validation tests, requires system GDAL (3.12+ needs git version until next release)
+# GDAL for validation tests - requires system GDAL (libgdal-dev)
+# Use git version for GDAL 3.12+ support (not yet released to crates.io)
 gdal = { git = "https://github.com/georust/gdal", features = ["bindgen"] }
