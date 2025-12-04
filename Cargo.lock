@@ -1037,6 +1037,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "geocog"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "flate2",
+ "futures",
+ "geo",
+ "image",
+ "lru",
+ "ndarray",
+ "object_store",
+ "once_cell",
+ "proj",
+ "reqwest",
+ "thiserror 2.0.12",
+ "tiff 0.10.3",
+ "tokio",
+ "tracing",
+ "url",
+ "weezl",
+ "zstd",
+]
+
+[[package]]
 name = "geographiclib-rs"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1744,12 +1769,6 @@ name = "lru-slab"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
-
-[[package]]
-name = "lzw"
-version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7d947cbb889ed21c2a84be6ffbaebf5b4e0f4340638cba0444907e38b56be084"
 
 [[package]]
 name = "matchit"
@@ -2827,12 +2846,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "28d3b2b1366ec20994f1fd18c3c594f05c5dd4bc44d8bb0c1c632c8d6829481f"
 
 [[package]]
-name = "salzweg"
-version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "29a9ec85db1460d952e6556b945c1f3e287ddb44b79d6d72171daac24d4950d2"
-
-[[package]]
 name = "same-file"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3250,14 +3263,13 @@ dependencies = [
  "colorgrad",
  "comfy-table",
  "csv",
- "flate2",
  "futures",
  "gdal",
  "geo",
+ "geocog",
  "image",
  "indicatif",
  "lru",
- "lzw",
  "ndarray",
  "noise",
  "object_store",
@@ -3265,13 +3277,10 @@ dependencies = [
  "proj",
  "rand 0.9.1",
  "rayon",
- "reqwest",
- "salzweg",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.12",
- "tiff 0.10.3",
  "tiny_tiff",
  "tokio",
  "tower",
@@ -3279,8 +3288,6 @@ dependencies = [
  "tracing",
  "url",
  "walkdir",
- "weezl",
- "zstd",
 ]
 
 [[package]]
