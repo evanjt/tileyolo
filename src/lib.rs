@@ -75,10 +75,12 @@
 mod config;
 mod constants;
 mod error;
-mod geometry;
 mod models;
 mod traits;
 mod utils;
+
+// Re-export geometry from geocog
+pub use geocog::geometry;
 
 pub mod endpoints;
 pub mod reader;
