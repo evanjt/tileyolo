@@ -6,7 +6,7 @@
 //! - Pixel value assertions
 
 use crate::models::geometry::GeometryExtent;
-use crate::reader::raster::RasterSource;
+use geocog::raster::RasterSource;
 
 /// A synthetic raster source for testing with predictable patterns
 pub struct SyntheticRaster {

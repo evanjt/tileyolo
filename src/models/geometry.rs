@@ -104,6 +104,23 @@ impl From<(f64, f64, f64, f64)> for GeometryExtent {
     }
 }
 
+impl From<geocog::xyz_tile::BoundingBox> for GeometryExtent {
+    fn from(bbox: geocog::xyz_tile::BoundingBox) -> Self {
+        GeometryExtent {
+            minx: bbox.minx,
+            miny: bbox.miny,
+            maxx: bbox.maxx,
+            maxy: bbox.maxy,
+        }
+    }
+}
+
+impl From<GeometryExtent> for geocog::xyz_tile::BoundingBox {
+    fn from(extent: GeometryExtent) -> Self {
+        geocog::xyz_tile::BoundingBox::new(extent.minx, extent.miny, extent.maxx, extent.maxy)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

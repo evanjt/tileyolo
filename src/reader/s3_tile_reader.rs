@@ -258,21 +258,9 @@ static TRANSPARENT_TILE: std::sync::LazyLock<Vec<u8>> = std::sync::LazyLock::new
     png_data
 });
 
+/// Helper to convert geocog BoundingBox to GeometryExtent for tile bounds
 fn tile_bounds_to_3857(z: u8, x: u32, y: u32) -> GeometryExtent {
-    let tile_size = 256.0;
-    let initial_resolution = 2.0 * WEB_MERCATOR_EXTENT / tile_size;
-    let res = initial_resolution / (2f64.powi(i32::from(z)));
-    let minx = f64::from(x) * tile_size * res - WEB_MERCATOR_EXTENT;
-    let maxx = (f64::from(x) + 1.0) * tile_size * res - WEB_MERCATOR_EXTENT;
-    let maxy = WEB_MERCATOR_EXTENT - f64::from(y) * tile_size * res;
-    let miny = WEB_MERCATOR_EXTENT - (f64::from(y) + 1.0) * tile_size * res;
-
-    GeometryExtent {
-        minx,
-        miny,
-        maxx,
-        maxy,
-    }
+    geocog::xyz_tile::BoundingBox::from_xyz(z.into(), x, y).into()
 }
 
 #[async_trait]

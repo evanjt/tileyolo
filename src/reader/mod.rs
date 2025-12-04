@@ -6,10 +6,6 @@ pub mod s3_tile_reader;
 
 // Re-export core types from geocog (used internally)
 pub use geocog::cog_reader;
-pub use geocog::lzw_fallback;
-pub use geocog::raster;
-pub use geocog::tiff_chunked;
-pub use geocog::tiff_utils;
 
 #[cfg(test)]
 mod gdal_comparison_tests;

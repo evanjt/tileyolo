@@ -81,9 +81,6 @@ mod reader;
 mod traits;
 mod utils;
 
-// Internal re-export of geometry from geocog (used by models/layer.rs and reader/cog.rs)
-pub(crate) use geocog::geometry;
-
 // Testing utilities - public for the generate_test_cog binary
 pub mod testing;
 

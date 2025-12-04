@@ -1,5 +1,5 @@
-use crate::geometry::projection::{lon_lat_to_mercator, mercator_to_lon_lat};
 use crate::models::{geometry::GeometryExtent, style::ColourStop};
+use geocog::project_point;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, path::PathBuf};
 
@@ -37,36 +37,12 @@ impl LayerGeometry {
             return Ok(self.clone());
         }
 
-        let new_extent = match (self.crs_code, target_crs) {
-            (4326, 3857) => {
-                // lon/lat → WebMercator
-                let (minx, miny) = lon_lat_to_mercator(self.extent.minx, self.extent.miny);
-                let (maxx, maxy) = lon_lat_to_mercator(self.extent.maxx, self.extent.maxy);
-                GeometryExtent::from((minx, miny, maxx, maxy))
-            }
-            (3857, 4326) => {
-                // WebMercator → lon/lat
-                let (minx, miny) = mercator_to_lon_lat(self.extent.minx, self.extent.miny);
-                let (maxx, maxy) = mercator_to_lon_lat(self.extent.maxx, self.extent.maxy);
-                GeometryExtent::from((minx, miny, maxx, maxy))
-            }
-            // any other CRS: fall back to PROJ
-            _ => {
-                let proj = proj::Proj::new_known_crs(
-                    format!("EPSG:{}", self.crs_code).as_str(),
-                    format!("EPSG:{target_crs}").as_str(),
-                    None,
-                )
-                .unwrap();
-                let (minx, miny) = proj
-                    .convert((self.extent.minx, self.extent.miny))
-                    .map_err(anyhow::Error::from)?;
-                let (maxx, maxy) = proj
-                    .convert((self.extent.maxx, self.extent.maxy))
-                    .map_err(anyhow::Error::from)?;
-                GeometryExtent::from((minx, miny, maxx, maxy))
-            }
-        };
+        // Use geocog's unified project_point for all CRS transformations
+        let (minx, miny) = project_point(self.crs_code, target_crs, self.extent.minx, self.extent.miny)
+            .map_err(anyhow::Error::msg)?;
+        let (maxx, maxy) = project_point(self.crs_code, target_crs, self.extent.maxx, self.extent.maxy)
+            .map_err(anyhow::Error::msg)?;
+        let new_extent = GeometryExtent::from((minx, miny, maxx, maxy));
 
         Ok(LayerGeometry {
             crs_code: target_crs,

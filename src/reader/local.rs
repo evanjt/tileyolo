@@ -384,7 +384,7 @@ impl TileReader for LocalTileReader {
             base_layer.clone()
         };
 
-        let tile_extent: GeometryExtent = tile_bounds_to_3857(z, x, y);
+        let tile_extent: GeometryExtent = geocog::xyz_tile::BoundingBox::from_xyz(z.into(), x, y).into();
 
         // OPTIMIZATION: Early rejection if tile doesn't intersect layer extent
         // This avoids loading COG data for tiles that are completely outside the layer
@@ -408,29 +408,17 @@ impl TileReader for LocalTileReader {
     }
 }
 
-fn tile_bounds_to_3857(z: u8, x: u32, y: u32) -> GeometryExtent {
-    let tile_size = 256.0;
-    let initial_resolution = 2.0 * WEB_MERCATOR_EXTENT / tile_size;
-    let res = initial_resolution / (2f64.powi(i32::from(z)));
-    let minx = f64::from(x) * tile_size * res - WEB_MERCATOR_EXTENT;
-    let maxx = (f64::from(x) + 1.0) * tile_size * res - WEB_MERCATOR_EXTENT;
-    let maxy = WEB_MERCATOR_EXTENT - f64::from(y) * tile_size * res;
-    let miny = WEB_MERCATOR_EXTENT - (f64::from(y) + 1.0) * tile_size * res;
-
-    GeometryExtent {
-        minx,
-        miny,
-        maxx,
-        maxy,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     use crate::constants::WEB_MERCATOR_EXTENT;
     const HALF_WORLD: f64 = WEB_MERCATOR_EXTENT;
+
+    /// Helper to convert geocog BoundingBox to GeometryExtent for tile bounds
+    fn tile_bounds_to_3857(z: u8, x: u32, y: u32) -> GeometryExtent {
+        geocog::xyz_tile::BoundingBox::from_xyz(z.into(), x, y).into()
+    }
 
     #[test]
     fn test_tile_bounds_zoom_0() {
