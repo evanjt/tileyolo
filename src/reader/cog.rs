@@ -1164,7 +1164,7 @@ mod tests {
         layer::{Layer, LayerGeometry},
         style::ColourStop,
     };
-    use crate::reader::test_utils::{SyntheticRaster, RasterPattern, assert_approx_eq};
+    use crate::testing::helpers::{SyntheticRaster, RasterPattern, assert_approx_eq};
 
     async fn make_layer(min_value: f32, max_value: f32) -> Layer {
         let path = PathBuf::new();

@@ -74,30 +74,25 @@
 
 mod config;
 mod constants;
+mod endpoints;
 mod error;
 mod models;
+mod reader;
 mod traits;
 mod utils;
 
-// Re-export geometry from geocog
-pub use geocog::geometry;
+// Internal re-export of geometry from geocog (used by models/layer.rs and reader/cog.rs)
+pub(crate) use geocog::geometry;
 
-pub mod endpoints;
-pub mod reader;
-
-#[cfg(test)]
-mod test_lzw_mod;
-
-#[cfg(test)]
-mod simple_test;
+// Testing utilities - public for the generate_test_cog binary
+pub mod testing;
 
 #[cfg(test)]
 mod gdal_validation_tests;
 
-// Test COG generator - available for tests and as a binary tool
-pub mod test_cog_generator;
-
+// Public API
 pub use config::{Config, ConfigBuilder, Source};
 pub use endpoints::router::TileYoloRouter;
 pub use endpoints::server::TileServer;
 pub use error::TileYoloError;
+pub use reader::compliance;

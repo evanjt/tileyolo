@@ -5,7 +5,7 @@
 
 use std::env;
 use std::path::PathBuf;
-use tileyolo::test_cog_generator::{TestCogGenerator, TestPattern};
+use tileyolo::testing::{TestCogGenerator, TestPattern};
 
 fn main() {
     let args: Vec<String> = env::args().collect();

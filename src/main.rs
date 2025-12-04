@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use tileyolo::{Config, Source, TileServer};
-use tileyolo::reader::compliance::{self, BatchSummary};
+use tileyolo::compliance::{self, BatchSummary};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
